@@ -1,5 +1,17 @@
 # fasthooks
 
+<p align="center">
+<a href="https://pypi.org/project/fasthooks" target="_blank">
+    <img src="https://img.shields.io/pypi/v/fasthooks?color=%2334D058&label=pypi" alt="PyPI version">
+</a>
+<a href="https://github.com/oneryalcin/fasthooks" target="_blank">
+    <img src="https://img.shields.io/github/stars/oneryalcin/fasthooks?style=flat&color=yellow" alt="GitHub stars">
+</a>
+<a href="https://github.com/oneryalcin/fasthooks/fork" target="_blank">
+    <img src="https://img.shields.io/github/forks/oneryalcin/fasthooks?style=flat" alt="GitHub forks">
+</a>
+</p>
+
 **Delightful Claude Code hooks with a FastAPI-like developer experience.**
 
 ```python
