@@ -22,10 +22,12 @@ class MockEvent:
         *,
         description: str | None = None,
         timeout: int | None = None,
+        post: bool = False,
+        tool_response: dict[str, Any] | None = None,
         session_id: str = "test-session",
         cwd: str = "/workspace",
     ) -> Bash:
-        """Create a Bash PreToolUse event."""
+        """Create a Bash PreToolUse or PostToolUse event."""
         tool_input: dict[str, Any] = {"command": command}
         if description:
             tool_input["description"] = description
@@ -36,10 +38,11 @@ class MockEvent:
             session_id=session_id,
             cwd=cwd,
             permission_mode="default",
-            hook_event_name="PreToolUse",
+            hook_event_name="PostToolUse" if post else "PreToolUse",
             tool_name="Bash",
             tool_input=tool_input,
             tool_use_id="test-tool-use",
+            tool_response=tool_response,
         )
 
     @staticmethod
@@ -47,18 +50,21 @@ class MockEvent:
         file_path: str,
         content: str = "",
         *,
+        post: bool = False,
+        tool_response: dict[str, Any] | None = None,
         session_id: str = "test-session",
         cwd: str = "/workspace",
     ) -> Write:
-        """Create a Write PreToolUse event."""
+        """Create a Write PreToolUse or PostToolUse event."""
         return Write(
             session_id=session_id,
             cwd=cwd,
             permission_mode="default",
-            hook_event_name="PreToolUse",
+            hook_event_name="PostToolUse" if post else "PreToolUse",
             tool_name="Write",
             tool_input={"file_path": file_path, "content": content},
             tool_use_id="test-tool-use",
+            tool_response=tool_response,
         )
 
     @staticmethod
