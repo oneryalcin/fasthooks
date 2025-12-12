@@ -274,3 +274,155 @@ class TestCatchAllHandlers:
 
         assert response is not None
         assert response.decision == "deny"
+
+
+class TestPostToolUse:
+    """Tests for PostToolUse handlers."""
+
+    def test_post_tool_handler(self):
+        """@post_tool registers handler for PostToolUse events."""
+        app = HookApp()
+        calls = []
+
+        @app.post_tool("Bash")
+        def after_bash(event):
+            calls.append(event.tool_name)
+            return allow()
+
+        client = TestClient(app)
+        client.send(MockEvent.bash(command="ls", post=True))
+
+        assert calls == ["Bash"]
+
+    def test_post_tool_receives_response(self):
+        """PostToolUse handler receives tool_response."""
+        app = HookApp()
+        responses = []
+
+        @app.post_tool("Bash")
+        def check_response(event):
+            responses.append(event.tool_response)
+            return allow()
+
+        client = TestClient(app)
+        client.send(MockEvent.bash(
+            command="ls",
+            post=True,
+            tool_response={"stdout": "file.txt", "exit_code": 0}
+        ))
+
+        assert responses == [{"stdout": "file.txt", "exit_code": 0}]
+
+    def test_post_tool_catch_all(self):
+        """Catch-all PostToolUse handler."""
+        app = HookApp()
+        tools = []
+
+        @app.post_tool()  # Catch-all
+        def log_all(event):
+            tools.append(event.tool_name)
+            return allow()
+
+        client = TestClient(app)
+        client.send(MockEvent.bash(command="ls", post=True))
+        client.send(MockEvent.write(file_path="/test.txt", post=True))
+
+        assert tools == ["Bash", "Write"]
+
+    def test_post_tool_can_block(self):
+        """PostToolUse can block with feedback."""
+        from fasthooks import block
+
+        app = HookApp()
+
+        @app.post_tool("Bash")
+        def check_exit(event):
+            if event.tool_response.get("exit_code") != 0:
+                return block("Command failed")
+            return allow()
+
+        client = TestClient(app)
+        response = client.send(MockEvent.bash(
+            command="bad_cmd",
+            post=True,
+            tool_response={"exit_code": 1}
+        ))
+
+        assert response is not None
+        assert response.decision == "block"
+
+
+class TestTaskToolResponse:
+    """Tests for Task tool response parsing."""
+
+    def test_task_agent_id(self):
+        """Task tool extracts agent_id from response."""
+        from fasthooks.events.tools import Task
+
+        event = Task.model_validate({
+            "session_id": "s1",
+            "cwd": "/workspace",
+            "permission_mode": "default",
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Task",
+            "tool_input": {"prompt": "explore", "subagent_type": "Explore"},
+            "tool_use_id": "t1",
+            "tool_response": {"agentId": "agent-123"},
+        })
+
+        assert event.agent_id == "agent-123"
+
+    def test_task_agent_id_none(self):
+        """Task tool returns None when no response."""
+        from fasthooks.events.tools import Task
+
+        event = Task.model_validate({
+            "session_id": "s1",
+            "cwd": "/workspace",
+            "permission_mode": "default",
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Task",
+            "tool_input": {"prompt": "explore"},
+            "tool_use_id": "t1",
+        })
+
+        assert event.agent_id is None
+
+    def test_task_response_text(self):
+        """Task tool extracts response_text from response."""
+        from fasthooks.events.tools import Task
+
+        event = Task.model_validate({
+            "session_id": "s1",
+            "cwd": "/workspace",
+            "permission_mode": "default",
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Task",
+            "tool_input": {"prompt": "explore"},
+            "tool_use_id": "t1",
+            "tool_response": {
+                "agentId": "agent-123",
+                "content": [
+                    {"type": "text", "text": "First part"},
+                    {"type": "text", "text": "Second part"},
+                ]
+            },
+        })
+
+        assert event.response_text == "First part\nSecond part"
+
+    def test_task_response_text_empty(self):
+        """Task tool returns empty string when no response."""
+        from fasthooks.events.tools import Task
+
+        event = Task.model_validate({
+            "session_id": "s1",
+            "cwd": "/workspace",
+            "permission_mode": "default",
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Task",
+            "tool_input": {"prompt": "explore"},
+            "tool_use_id": "t1",
+        })
+
+        assert event.response_text == ""
