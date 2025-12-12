@@ -39,6 +39,9 @@ nav:
       - tutorial/index.md
       - Events: tutorial/events.md
       - Responses: tutorial/responses.md
+      - Dependencies: tutorial/dependencies.md
+      - Blueprints: tutorial/blueprints.md
+      - Middleware: tutorial/middleware.md
       - Testing: tutorial/testing.md
   - CLI Reference: cli.md
   - API Reference: reference.md

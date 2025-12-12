@@ -8,7 +8,10 @@ This tutorial covers:
 
 1. **[Events](events.md)** - Understanding hook events and typed tool events
 2. **[Responses](responses.md)** - Using `allow()`, `deny()`, and `block()`
-3. **[Testing](testing.md)** - Writing tests with `MockEvent` and `TestClient`
+3. **[Dependencies](dependencies.md)** - Inject State and Transcript into handlers
+4. **[Blueprints](blueprints.md)** - Organize handlers into reusable modules
+5. **[Middleware](middleware.md)** - Cross-cutting concerns (timing, logging)
+6. **[Testing](testing.md)** - Writing tests with `MockEvent` and `TestClient`
 
 ## Core Concepts
 
@@ -64,8 +67,6 @@ def check_sudo(event):
 
 ## Advanced Topics
 
-Coming soon:
-
-- Dependency Injection (State, Transcript)
-- Blueprints
-- Middleware
+- **[Dependencies](dependencies.md)** - Access conversation history and persistent state
+- **[Blueprints](blueprints.md)** - Split handlers into reusable modules
+- **[Middleware](middleware.md)** - Add timing, logging, error handling to all handlers
