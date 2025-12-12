@@ -7,7 +7,6 @@ from typing import Annotated
 
 import typer
 from rich import print
-from rich.panel import Panel
 
 app = typer.Typer(
     rich_markup_mode="rich",
@@ -16,6 +15,9 @@ app = typer.Typer(
 )
 
 HOOKS_TEMPLATE = '''\
+# /// script
+# dependencies = ["fasthooks"]
+# ///
 """Claude Code hooks."""
 from fasthooks import HookApp, allow, deny
 
@@ -54,6 +56,45 @@ dependencies = [
 dev = [
     "pytest",
 ]
+'''
+
+SETTINGS_TEMPLATE = '''\
+{{
+  "hooks": {{
+    "PreToolUse": [
+      {{
+        "matcher": "*",
+        "hooks": [
+          {{
+            "type": "command",
+            "command": "uv run {hooks_path}"
+          }}
+        ]
+      }}
+    ],
+    "PostToolUse": [
+      {{
+        "matcher": "*",
+        "hooks": [
+          {{
+            "type": "command",
+            "command": "uv run {hooks_path}"
+          }}
+        ]
+      }}
+    ],
+    "Stop": [
+      {{
+        "hooks": [
+          {{
+            "type": "command",
+            "command": "uv run {hooks_path}"
+          }}
+        ]
+      }}
+    ]
+  }}
+}}
 '''
 
 
@@ -126,25 +167,25 @@ def init(
     project_name = path.name.replace("-", "_").replace(" ", "_")
     pyproject_file.write_text(PYPROJECT_TEMPLATE.format(name=project_name))
 
+    # Write .claude/settings.json
+    claude_dir = path / ".claude"
+    claude_dir.mkdir(exist_ok=True)
+    settings_file = claude_dir / "settings.json"
+    hooks_path = path.absolute() / "hooks.py"
+    settings_file.write_text(SETTINGS_TEMPLATE.format(hooks_path=hooks_path))
+
     print()
     print(f"[green]✓[/green] Created hooks project at [bold]{path}[/bold]")
     print()
+    print("[bold]Files created:[/bold]")
+    print(f"  {path}/hooks.py              - Your hook handlers")
+    print(f"  {path}/pyproject.toml        - Project dependencies")
+    print(f"  {path}/.claude/settings.json - Claude Code config")
+    print()
     print("[bold]Next steps:[/bold]")
     print(f"  cd {path}")
-    print("  uv sync")
     print("  # Edit hooks.py to add your hooks")
-    print()
-    print("[bold]Add to your Claude Code settings.json:[/bold]")
-    print()
-    print(Panel.fit(f'''\
-"hooks": {{
-  "PreToolUse": [{{
-    "command": "python {path.absolute()}/hooks.py"
-  }}],
-  "Stop": [{{
-    "command": "python {path.absolute()}/hooks.py"
-  }}]
-}}''', title="settings.json", border_style="blue"))
+    print("  # Copy .claude/settings.json to your target project")
 
 
 @app.command()
@@ -155,11 +196,22 @@ def run(
             help="Path to hooks.py file (default: ./hooks.py)"
         ),
     ] = None,
+    input_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--input", "-i",
+            help="JSON file to use as input instead of stdin (for testing)"
+        ),
+    ] = None,
 ) -> None:
     """
     Run hooks in stdin/stdout mode. 📥
 
     This command is typically called by Claude Code via settings.json.
+
+    For local testing, use --input to provide a JSON file:
+
+        $ fasthooks run hooks.py --input test_event.json
 
     Your hooks.py should contain:
 
@@ -185,6 +237,13 @@ def run(
         print()
         print("Create a hooks project with: [bold]fasthooks init my-hooks[/bold]")
         raise typer.Exit(code=1)
+
+    # If --input provided, redirect stdin from file
+    if input_file is not None:
+        if not input_file.exists():
+            print(f"[red]Error:[/red] Input file [bold]{input_file}[/bold] not found")
+            raise typer.Exit(code=1)
+        sys.stdin = input_file.open("r")
 
     # Execute the hooks file
     import runpy
