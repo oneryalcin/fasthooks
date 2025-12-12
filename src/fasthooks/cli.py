@@ -7,7 +7,6 @@ from typing import Annotated
 
 import typer
 from rich import print
-from rich.panel import Panel
 
 app = typer.Typer(
     rich_markup_mode="rich",
@@ -16,6 +15,9 @@ app = typer.Typer(
 )
 
 HOOKS_TEMPLATE = '''\
+# /// script
+# dependencies = ["fasthooks"]
+# ///
 """Claude Code hooks."""
 from fasthooks import HookApp, allow, deny
 
@@ -54,6 +56,45 @@ dependencies = [
 dev = [
     "pytest",
 ]
+'''
+
+SETTINGS_TEMPLATE = '''\
+{{
+  "hooks": {{
+    "PreToolUse": [
+      {{
+        "matcher": "*",
+        "hooks": [
+          {{
+            "type": "command",
+            "command": "uv run {hooks_path}"
+          }}
+        ]
+      }}
+    ],
+    "PostToolUse": [
+      {{
+        "matcher": "*",
+        "hooks": [
+          {{
+            "type": "command",
+            "command": "uv run {hooks_path}"
+          }}
+        ]
+      }}
+    ],
+    "Stop": [
+      {{
+        "hooks": [
+          {{
+            "type": "command",
+            "command": "uv run {hooks_path}"
+          }}
+        ]
+      }}
+    ]
+  }}
+}}
 '''
 
 
@@ -126,25 +167,25 @@ def init(
     project_name = path.name.replace("-", "_").replace(" ", "_")
     pyproject_file.write_text(PYPROJECT_TEMPLATE.format(name=project_name))
 
+    # Write .claude/settings.json
+    claude_dir = path / ".claude"
+    claude_dir.mkdir(exist_ok=True)
+    settings_file = claude_dir / "settings.json"
+    hooks_path = path.absolute() / "hooks.py"
+    settings_file.write_text(SETTINGS_TEMPLATE.format(hooks_path=hooks_path))
+
     print()
     print(f"[green]✓[/green] Created hooks project at [bold]{path}[/bold]")
     print()
+    print("[bold]Files created:[/bold]")
+    print(f"  {path}/hooks.py              - Your hook handlers")
+    print(f"  {path}/pyproject.toml        - Project dependencies")
+    print(f"  {path}/.claude/settings.json - Claude Code config")
+    print()
     print("[bold]Next steps:[/bold]")
     print(f"  cd {path}")
-    print("  uv sync")
     print("  # Edit hooks.py to add your hooks")
-    print()
-    print("[bold]Add to your Claude Code settings.json:[/bold]")
-    print()
-    print(Panel.fit(f'''\
-"hooks": {{
-  "PreToolUse": [{{
-    "command": "python {path.absolute()}/hooks.py"
-  }}],
-  "Stop": [{{
-    "command": "python {path.absolute()}/hooks.py"
-  }}]
-}}''', title="settings.json", border_style="blue"))
+    print("  # Copy .claude/settings.json to your target project")
 
 
 @app.command()
@@ -155,11 +196,22 @@ def run(
             help="Path to hooks.py file (default: ./hooks.py)"
         ),
     ] = None,
+    input_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--input", "-i",
+            help="JSON file to use as input instead of stdin (for testing)"
+        ),
+    ] = None,
 ) -> None:
     """
     Run hooks in stdin/stdout mode. 📥
 
     This command is typically called by Claude Code via settings.json.
+
+    For local testing, use --input to provide a JSON file:
+
+        $ fasthooks run hooks.py --input test_event.json
 
     Your hooks.py should contain:
 
@@ -186,10 +238,70 @@ def run(
         print("Create a hooks project with: [bold]fasthooks init my-hooks[/bold]")
         raise typer.Exit(code=1)
 
+    # If --input provided, redirect stdin from file
+    if input_file is not None:
+        if not input_file.exists():
+            print(f"[red]Error:[/red] Input file [bold]{input_file}[/bold] not found")
+            raise typer.Exit(code=1)
+        sys.stdin = input_file.open("r")
+
     # Execute the hooks file
     import runpy
     sys.argv = [str(path)]
     runpy.run_path(str(path), run_name="__main__")
+
+
+EXAMPLE_EVENTS = {
+    "bash": "MockEvent.bash(command='echo hello')",
+    "bash_dangerous": "MockEvent.bash(command='rm -rf /')",
+    "write": "MockEvent.write(file_path='/tmp/test.txt', content='Hello world')",
+    "read": "MockEvent.read(file_path='/tmp/test.txt')",
+    "edit": "MockEvent.edit(file_path='/tmp/test.txt', old_string='old', new_string='new')",
+    "stop": "MockEvent.stop()",
+    "session_start": "MockEvent.session_start(source='startup')",
+    "pre_compact": "MockEvent.pre_compact(trigger='manual')",
+    "permission_bash": "MockEvent.permission_bash(command='rm -rf /')",
+    "permission_write": "MockEvent.permission_write(file_path='/etc/passwd', content='bad')",
+    "permission_edit": "MockEvent.permission_edit('/etc/hosts', 'a', 'b')",
+}
+
+
+@app.command()
+def example(
+    event_type: Annotated[
+        str,
+        typer.Argument(
+            help=f"Event type: {', '.join(EXAMPLE_EVENTS.keys())}"
+        ),
+    ],
+) -> None:
+    """
+    Generate sample event JSON for testing. 📋
+
+    Use with --input to test your hooks locally:
+
+        $ fasthooks example bash > event.json
+        $ fasthooks run hooks.py --input event.json
+
+    Available events:
+        bash, write, read, edit, stop, session_start, pre_compact,
+        permission_bash, permission_write, permission_edit
+    """
+    from fasthooks.testing import MockEvent  # noqa: F401 (used in eval)
+
+    event_type = event_type.lower().replace("-", "_")
+
+    if event_type not in EXAMPLE_EVENTS:
+        print(f"[red]Error:[/red] Unknown event type '{event_type}'")
+        print()
+        print(f"[bold]Available:[/bold] {', '.join(sorted(EXAMPLE_EVENTS.keys()))}")
+        raise typer.Exit(code=1)
+
+    # Create the event using MockEvent factory
+    event = eval(EXAMPLE_EVENTS[event_type])  # noqa: S307
+    # Output raw JSON (no rich formatting) for piping
+    import json
+    sys.stdout.write(json.dumps(event.model_dump(), indent=2) + "\n")
 
 
 def main() -> None:
