@@ -237,14 +237,17 @@ def test_no_rm_rf():
 ## CLI
 
 ```bash
-# Initialize a new project
+# Initialize a new project (creates hooks.py, pyproject.toml, .claude/settings.json)
 fasthooks init my-hooks
-
-# Show help
-fasthooks --help
 
 # Run hooks (called by Claude Code)
 fasthooks run hooks.py
+
+# Test hooks locally with a JSON file
+fasthooks run hooks.py --input test_event.json
+
+# Show help
+fasthooks --help
 ```
 
 ## License
