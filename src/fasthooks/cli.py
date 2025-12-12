@@ -251,6 +251,59 @@ def run(
     runpy.run_path(str(path), run_name="__main__")
 
 
+EXAMPLE_EVENTS = {
+    "bash": "MockEvent.bash(command='echo hello')",
+    "bash_dangerous": "MockEvent.bash(command='rm -rf /')",
+    "write": "MockEvent.write(file_path='/tmp/test.txt', content='Hello world')",
+    "read": "MockEvent.read(file_path='/tmp/test.txt')",
+    "edit": "MockEvent.edit(file_path='/tmp/test.txt', old_string='old', new_string='new')",
+    "stop": "MockEvent.stop()",
+    "session_start": "MockEvent.session_start(source='startup')",
+    "pre_compact": "MockEvent.pre_compact(trigger='manual')",
+    "permission_bash": "MockEvent.permission_bash(command='rm -rf /')",
+    "permission_write": "MockEvent.permission_write(file_path='/etc/passwd', content='bad')",
+    "permission_edit": "MockEvent.permission_edit('/etc/hosts', 'a', 'b')",
+}
+
+
+@app.command()
+def example(
+    event_type: Annotated[
+        str,
+        typer.Argument(
+            help=f"Event type: {', '.join(EXAMPLE_EVENTS.keys())}"
+        ),
+    ],
+) -> None:
+    """
+    Generate sample event JSON for testing. 📋
+
+    Use with --input to test your hooks locally:
+
+        $ fasthooks example bash > event.json
+        $ fasthooks run hooks.py --input event.json
+
+    Available events:
+        bash, write, read, edit, stop, session_start, pre_compact,
+        permission_bash, permission_write, permission_edit
+    """
+    from fasthooks.testing import MockEvent  # noqa: F401 (used in eval)
+
+    event_type = event_type.lower().replace("-", "_")
+
+    if event_type not in EXAMPLE_EVENTS:
+        print(f"[red]Error:[/red] Unknown event type '{event_type}'")
+        print()
+        print(f"[bold]Available:[/bold] {', '.join(sorted(EXAMPLE_EVENTS.keys()))}")
+        raise typer.Exit(code=1)
+
+    # Create the event using MockEvent factory
+    event = eval(EXAMPLE_EVENTS[event_type])  # noqa: S307
+    # Output raw JSON (no rich formatting) for piping
+    import json
+    sys.stdout.write(json.dumps(event.model_dump(), indent=2) + "\n")
+
+
 def main() -> None:
     """CLI entry point."""
     app()

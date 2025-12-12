@@ -243,8 +243,12 @@ fasthooks init my-hooks
 # Run hooks (called by Claude Code)
 fasthooks run hooks.py
 
-# Test hooks locally with a JSON file
-fasthooks run hooks.py --input test_event.json
+# Generate sample event JSON for testing
+fasthooks example bash
+fasthooks example bash_dangerous > event.json
+
+# Test hooks locally
+fasthooks run hooks.py --input event.json
 
 # Show help
 fasthooks --help
