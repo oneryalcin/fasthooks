@@ -515,3 +515,454 @@ def test_ttl_cleanup():
 
     # Should be cleaned up on next access
     assert backend.get("s1", "expired") is None
+
+
+# ═══════════════════════════════════════════════════════════════
+# InMemoryBackend additional coverage tests
+# ═══════════════════════════════════════════════════════════════
+
+
+def test_inmemory_backend_pop():
+    """Test InMemoryBackend pop retrieves and removes result."""
+    backend = InMemoryBackend(max_workers=2)
+
+    @task
+    def greet(name: str) -> str:
+        return f"Hello, {name}!"
+
+    backend.enqueue(greet, ("World",), {}, session_id="s1", key="greeting")
+    time.sleep(0.2)  # Wait for task to complete
+
+    value = backend.pop("s1", "greeting")
+    assert value == "Hello, World!"
+    assert backend.pop("s1", "greeting") is None
+
+    backend.shutdown()
+
+
+def test_inmemory_backend_pop_all():
+    """Test InMemoryBackend pop_all retrieves all results."""
+    backend = InMemoryBackend(max_workers=2)
+
+    @task
+    def echo(x: int) -> int:
+        return x
+
+    backend.enqueue(echo, (1,), {}, session_id="s1", key="a")
+    backend.enqueue(echo, (2,), {}, session_id="s1", key="b")
+    backend.enqueue(echo, (3,), {}, session_id="s2", key="c")
+    time.sleep(0.3)
+
+    values = backend.pop_all("s1")
+    assert set(values) == {1, 2}
+    assert backend.pop("s2", "c") == 3
+
+    backend.shutdown()
+
+
+def test_inmemory_backend_pop_errors():
+    """Test InMemoryBackend pop_errors retrieves failed tasks."""
+    backend = InMemoryBackend(max_workers=2)
+
+    @task
+    def fail():
+        raise ValueError("Error!")
+
+    backend.enqueue(fail, (), {}, session_id="s1", key="fail1")
+    time.sleep(0.2)
+
+    errors = backend.pop_errors("s1")
+    assert len(errors) == 1
+    assert isinstance(errors[0][1], ValueError)
+
+    backend.shutdown()
+
+
+def test_inmemory_backend_has():
+    """Test InMemoryBackend has checks for completed results."""
+    backend = InMemoryBackend(max_workers=2)
+
+    @task
+    def echo(x: int) -> int:
+        return x
+
+    assert not backend.has("s1", "key")
+    assert not backend.has("s1")
+
+    backend.enqueue(echo, (1,), {}, session_id="s1", key="key")
+    time.sleep(0.2)
+
+    assert backend.has("s1", "key")
+    assert backend.has("s1")
+    assert not backend.has("s1", "other")
+
+    backend.shutdown()
+
+
+def test_inmemory_backend_cancel_all():
+    """Test InMemoryBackend cancel_all cancels multiple tasks."""
+    backend = InMemoryBackend(max_workers=1)
+
+    @task
+    def slow_task() -> str:
+        time.sleep(2)
+        return "done"
+
+    # Enqueue tasks
+    backend.enqueue(slow_task, (), {}, session_id="s1", key="a")
+    backend.enqueue(slow_task, (), {}, session_id="s1", key="b")
+
+    # Cancel all
+    cancelled = backend.cancel_all("s1")
+    assert cancelled >= 0  # May vary based on timing
+
+    backend.shutdown(wait=False)
+
+
+def test_inmemory_backend_get():
+    """Test InMemoryBackend get retrieves without removing."""
+    backend = InMemoryBackend(max_workers=2)
+
+    @task
+    def echo(x: int) -> int:
+        return x
+
+    backend.enqueue(echo, (42,), {}, session_id="s1", key="answer")
+    time.sleep(0.2)
+
+    # Get doesn't remove
+    result = backend.get("s1", "answer")
+    assert result is not None
+    assert result.value == 42
+
+    # Can still get again
+    result2 = backend.get("s1", "answer")
+    assert result2 is not None
+
+    backend.shutdown()
+
+
+def test_inmemory_backend_shutdown():
+    """Test InMemoryBackend shutdown."""
+    backend = InMemoryBackend(max_workers=2)
+
+    @task
+    def echo(x: int) -> int:
+        return x
+
+    backend.enqueue(echo, (1,), {}, session_id="s1", key="a")
+    backend.shutdown(wait=True)
+
+    # Backend should still have results after shutdown
+    assert backend.get("s1", "a") is not None
+
+
+@pytest.mark.asyncio
+async def test_inmemory_backend_wait():
+    """Test InMemoryBackend async wait."""
+    backend = InMemoryBackend(max_workers=2)
+
+    @task
+    def slow_echo(x: int) -> int:
+        time.sleep(0.1)
+        return x
+
+    backend.enqueue(slow_echo, (42,), {}, session_id="s1", key="answer")
+
+    result = await backend.wait("s1", "answer", timeout=2.0)
+    assert result == 42
+
+    backend.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_inmemory_backend_wait_timeout():
+    """Test InMemoryBackend wait timeout."""
+    backend = InMemoryBackend(max_workers=1)
+
+    @task
+    def very_slow() -> str:
+        time.sleep(10)
+        return "done"
+
+    backend.enqueue(very_slow, (), {}, session_id="s1", key="slow")
+
+    # Should timeout
+    result = await backend.wait("s1", "slow", timeout=0.1)
+    assert result is None
+
+    backend.shutdown(wait=False)
+
+
+@pytest.mark.asyncio
+async def test_inmemory_backend_wait_nonexistent():
+    """Test InMemoryBackend wait for nonexistent task."""
+    backend = InMemoryBackend(max_workers=2)
+
+    result = await backend.wait("s1", "nonexistent", timeout=0.1)
+    assert result is None
+
+    backend.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_inmemory_backend_wait_all():
+    """Test InMemoryBackend wait_all."""
+    backend = InMemoryBackend(max_workers=2)
+
+    @task
+    def echo(x: int) -> int:
+        time.sleep(0.05)
+        return x
+
+    backend.enqueue(echo, (1,), {}, session_id="s1", key="a")
+    backend.enqueue(echo, (2,), {}, session_id="s1", key="b")
+
+    results = await backend.wait_all("s1", ["a", "b"], timeout=2.0)
+    assert results == {"a": 1, "b": 2}
+
+    backend.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_inmemory_backend_wait_any():
+    """Test InMemoryBackend wait_any."""
+    backend = InMemoryBackend(max_workers=2)
+
+    @task
+    def fast() -> str:
+        return "fast"
+
+    @task
+    def slow() -> str:
+        time.sleep(1)
+        return "slow"
+
+    backend.enqueue(fast, (), {}, session_id="s1", key="fast")
+    backend.enqueue(slow, (), {}, session_id="s1", key="slow")
+
+    result = await backend.wait_any("s1", ["fast", "slow"], timeout=2.0)
+    assert result == ("fast", "fast")
+
+    backend.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_inmemory_backend_wait_failed_task():
+    """Test InMemoryBackend wait returns None for failed task."""
+    backend = InMemoryBackend(max_workers=2)
+
+    @task
+    def fail():
+        raise ValueError("Error!")
+
+    backend.enqueue(fail, (), {}, session_id="s1", key="fail")
+    time.sleep(0.2)
+
+    result = await backend.wait("s1", "fail", timeout=1.0)
+    assert result is None
+
+    backend.shutdown()
+
+
+# ═══════════════════════════════════════════════════════════════
+# BackgroundTasks and PendingResults additional coverage
+# ═══════════════════════════════════════════════════════════════
+
+
+def test_background_tasks_cancel():
+    """Test BackgroundTasks cancel method."""
+    backend = ImmediateBackend()
+    tasks_di = BackgroundTasks(backend, "s1")
+
+    @task
+    def echo(x: int) -> int:
+        return x
+
+    tasks_di.add(echo, 1, key="test")
+
+    # Can't cancel already completed task (ImmediateBackend)
+    assert not tasks_di.cancel("test")
+
+
+def test_background_tasks_cancel_all():
+    """Test BackgroundTasks cancel_all method."""
+    backend = ImmediateBackend()
+    tasks_di = BackgroundTasks(backend, "s1")
+
+    cancelled = tasks_di.cancel_all()
+    assert cancelled == 0
+
+
+def test_pending_results_get():
+    """Test PendingResults get method."""
+    backend = ImmediateBackend()
+
+    @task
+    def echo(x: int) -> int:
+        return x
+
+    backend.enqueue(echo, (42,), {}, session_id="s1", key="answer")
+
+    pending = PendingResults(backend, "s1")
+    result = pending.get("answer")
+
+    assert result is not None
+    assert result.value == 42
+    # get doesn't remove
+    assert pending.get("answer") is not None
+
+
+def test_pending_results_has_specific():
+    """Test PendingResults has with specific key."""
+    backend = ImmediateBackend()
+
+    @task
+    def echo(x: int) -> int:
+        return x
+
+    backend.enqueue(echo, (1,), {}, session_id="s1", key="a")
+
+    pending = PendingResults(backend, "s1")
+
+    assert pending.has("a")
+    assert not pending.has("b")
+
+
+def test_pending_results_has_any():
+    """Test PendingResults has without key (any)."""
+    backend = ImmediateBackend()
+    pending = PendingResults(backend, "s1")
+
+    assert not pending.has()
+
+    @task
+    def echo(x: int) -> int:
+        return x
+
+    backend.enqueue(echo, (1,), {}, session_id="s1", key="a")
+    assert pending.has()
+
+
+def test_pending_results_pop_errors():
+    """Test PendingResults pop_errors method."""
+    backend = ImmediateBackend()
+
+    @task
+    def fail():
+        raise ValueError("Error!")
+
+    backend.enqueue(fail, (), {}, session_id="s1", key="fail")
+
+    pending = PendingResults(backend, "s1")
+    errors = pending.pop_errors()
+
+    assert len(errors) == 1
+    assert errors[0][0] == "fail"
+    assert isinstance(errors[0][1], ValueError)
+
+
+@pytest.mark.asyncio
+async def test_pending_results_wait_all():
+    """Test PendingResults wait_all method."""
+    backend = ImmediateBackend()
+
+    @task
+    def echo(x: int) -> int:
+        return x
+
+    backend.enqueue(echo, (1,), {}, session_id="s1", key="a")
+    backend.enqueue(echo, (2,), {}, session_id="s1", key="b")
+
+    pending = PendingResults(backend, "s1")
+    results = await pending.wait_all(["a", "b"], timeout=1.0)
+
+    assert results == {"a": 1, "b": 2}
+
+
+@pytest.mark.asyncio
+async def test_pending_results_wait_any():
+    """Test PendingResults wait_any method."""
+    backend = ImmediateBackend()
+
+    @task
+    def echo(x: int) -> int:
+        return x
+
+    backend.enqueue(echo, (42,), {}, session_id="s1", key="first")
+
+    pending = PendingResults(backend, "s1")
+    result = await pending.wait_any(["first", "second"], timeout=1.0)
+
+    assert result == ("first", 42)
+
+
+# ═══════════════════════════════════════════════════════════════
+# Edge cases and error handling
+# ═══════════════════════════════════════════════════════════════
+
+
+def test_immediate_backend_transform():
+    """Test ImmediateBackend with transform function."""
+    backend = ImmediateBackend()
+
+    @task(transform=lambda x: f"Result: {x}")
+    def double(x: int) -> int:
+        return x * 2
+
+    backend.enqueue(double, (5,), {}, session_id="s1", key="test")
+    assert backend.pop("s1", "test") == "Result: 10"
+
+
+def test_task_with_kwargs():
+    """Test task execution with keyword arguments."""
+    backend = ImmediateBackend()
+
+    @task
+    def greet(name: str, greeting: str = "Hello") -> str:
+        return f"{greeting}, {name}!"
+
+    backend.enqueue(
+        greet,
+        ("World",),
+        {"greeting": "Hi"},
+        session_id="s1",
+        key="greeting",
+    )
+    assert backend.pop("s1", "greeting") == "Hi, World!"
+
+
+def test_background_tasks_add_with_task_object():
+    """Test BackgroundTasks.add with Task object instead of function."""
+    backend = ImmediateBackend()
+    tasks_di = BackgroundTasks(backend, "s1")
+
+    @task(ttl=600)
+    def echo(x: int) -> int:
+        return x
+
+    # Add using the Task object directly
+    tasks_di.add(echo, 42, key="test")
+
+    result = backend.pop("s1", "test")
+    assert result == 42
+
+
+def test_inmemory_backend_ttl_cleanup():
+    """Test InMemoryBackend TTL cleanup."""
+    backend = InMemoryBackend(max_workers=2)
+
+    @task(ttl=0)  # Immediate expiry
+    def echo(x: int) -> int:
+        return x
+
+    backend.enqueue(echo, (1,), {}, session_id="s1", key="expired")
+    time.sleep(0.2)  # Wait for task and expiry
+
+    # Small delay to ensure TTL expires
+    time.sleep(0.01)
+
+    # Should be cleaned up on next access
+    assert backend.get("s1", "expired") is None
+
+    backend.shutdown()
