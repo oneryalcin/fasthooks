@@ -40,12 +40,14 @@ class ImmediateBackend(BaseBackend):
         return f"{session_id}:{key}"
 
     def _cleanup_expired(self) -> None:
-        """Remove expired results (only finished tasks)."""
-        now = time()
+        """Remove expired results (only finished tasks).
+
+        TTL is measured from completion time, not creation time.
+        """
         expired = [
             k
             for k, v in self.results.items()
-            if v.is_finished and now - v.created_at > v.ttl
+            if v.is_finished and v.is_expired
         ]
         for k in expired:
             del self.results[k]

@@ -108,13 +108,13 @@ class InMemoryBackend(BaseBackend):
 
         Only expires finished tasks (COMPLETED, FAILED, CANCELLED).
         Running/pending tasks are never expired - TTL applies to results, not work.
+        TTL is measured from completion time, not creation time.
         """
-        now = time()
         with self._lock:
             expired = [
                 k
                 for k, v in self.results.items()
-                if v.is_finished and now - v.created_at > v.ttl
+                if v.is_finished and v.is_expired
             ]
             for k in expired:
                 del self.results[k]

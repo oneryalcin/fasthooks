@@ -42,8 +42,14 @@ class TaskResult:
 
     @property
     def is_expired(self) -> bool:
-        """Check if task result has expired based on TTL."""
-        return time() - self.created_at > self.ttl
+        """Check if task result has expired based on TTL.
+
+        TTL is measured from finished_at (completion time) if available,
+        otherwise from created_at. This ensures results remain available
+        for the full TTL after completion, even for long-running tasks.
+        """
+        anchor = self.finished_at if self.finished_at is not None else self.created_at
+        return time() - anchor > self.ttl
 
     def set_running(self) -> None:
         """Mark task as running."""

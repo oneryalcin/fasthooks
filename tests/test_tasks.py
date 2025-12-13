@@ -166,6 +166,57 @@ def test_running_task_not_expired_by_ttl():
     backend.shutdown()
 
 
+def test_ttl_measured_from_completion_not_creation():
+    """Test that TTL is measured from completion time, not creation time.
+
+    A task with TTL=2s that runs for 3s should still have its result
+    available for 2s after completion, not expire immediately.
+    """
+
+    @task(ttl=2)  # 2 second TTL
+    def long_task() -> str:
+        time.sleep(0.5)  # Runs longer than we'll wait before checking
+        return "result"
+
+    backend = InMemoryBackend()
+    result = backend.enqueue(
+        long_task,
+        (),
+        {},
+        session_id="test",
+        key="long",
+    )
+
+    # Wait for completion
+    deadline = time.time() + 5.0
+    while not result.is_finished:
+        if time.time() > deadline:
+            raise TimeoutError("Task did not complete")
+        time.sleep(0.1)
+
+    assert result.status == TaskStatus.COMPLETED
+    assert result.value == "result"
+
+    # Task completed - result should be available for TTL (2s) from NOW
+    # Even though time since creation may exceed TTL
+    time.sleep(0.5)  # Wait a bit but less than TTL
+    backend._cleanup_expired()
+
+    # Result should still exist (TTL measured from completion)
+    stored = backend.get("test", "long")
+    assert stored is not None
+    assert stored.value == "result"
+
+    # Now wait for TTL to expire from completion time
+    time.sleep(2.0)
+    backend._cleanup_expired()
+
+    # Now it should be expired
+    assert backend.get("test", "long") is None
+
+    backend.shutdown()
+
+
 def test_task_result_status_transitions():
     """Test TaskResult status transitions."""
     result = TaskResult(
