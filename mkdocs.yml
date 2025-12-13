@@ -40,11 +40,36 @@ nav:
       - Events: tutorial/events.md
       - Responses: tutorial/responses.md
       - Dependencies: tutorial/dependencies.md
+      - Background Tasks: tutorial/background-tasks.md
       - Blueprints: tutorial/blueprints.md
       - Middleware: tutorial/middleware.md
       - Testing: tutorial/testing.md
   - CLI Reference: cli.md
   - API Reference: reference.md
+  - Python API:
+      - api/index.md
+      - api/app.md
+      - api/responses.md
+      - api/events.md
+      - api/depends.md
+      - api/tasks.md
+      - api/contrib-claude.md
+      - api/testing.md
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            show_source: false
+            show_root_heading: true
+            show_root_full_path: false
+            heading_level: 2
+            members_order: source
+            show_signature_annotations: true
+            separate_signature: true
 
 markdown_extensions:
   - abbr
