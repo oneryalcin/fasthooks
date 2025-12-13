@@ -953,6 +953,56 @@ async def test_inmemory_backend_wait_failed_task():
     backend.shutdown()
 
 
+@pytest.mark.asyncio
+async def test_inmemory_backend_wait_any_exits_early_on_all_failures():
+    """Test wait_any returns early when all tasks fail instead of waiting for timeout."""
+    backend = InMemoryBackend(max_workers=2)
+
+    @task
+    def fail_fast():
+        raise ValueError("Error!")
+
+    backend.enqueue(fail_fast, (), {}, session_id="s1", key="fail1")
+    backend.enqueue(fail_fast, (), {}, session_id="s1", key="fail2")
+    time.sleep(0.2)  # Let tasks fail
+
+    start = time.time()
+    result = await backend.wait_any("s1", ["fail1", "fail2"], timeout=10.0)
+    elapsed = time.time() - start
+
+    # Should return None immediately, not wait for 10s timeout
+    assert result is None
+    assert elapsed < 1.0  # Should exit much faster than 10s
+
+    backend.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_inmemory_backend_wait_respects_ttl():
+    """Test that wait methods respect TTL and don't return expired results."""
+    backend = InMemoryBackend(max_workers=2)
+
+    @task(ttl=1)  # 1 second TTL
+    def quick() -> str:
+        return "result"
+
+    backend.enqueue(quick, (), {}, session_id="s1", key="quick")
+    time.sleep(0.2)  # Let task complete
+
+    # Result should be available initially
+    result1 = await backend.wait("s1", "quick", timeout=0.5)
+    assert result1 == "result"
+
+    # Wait for TTL to expire
+    time.sleep(1.5)
+
+    # Result should now be expired and return None
+    result2 = await backend.wait("s1", "quick", timeout=0.5)
+    assert result2 is None
+
+    backend.shutdown()
+
+
 # ═══════════════════════════════════════════════════════════════
 # BackgroundTasks and PendingResults additional coverage
 # ═══════════════════════════════════════════════════════════════

@@ -335,6 +335,7 @@ class InMemoryBackend(BaseBackend):
         deadline = time() + timeout
 
         while time() < deadline:
+            self._cleanup_expired()  # Enforce TTL
             task_result = self.results.get(result_key)
             if task_result is None:
                 return None
@@ -361,6 +362,7 @@ class InMemoryBackend(BaseBackend):
         remaining = set(keys)
 
         while remaining and time() < deadline:
+            self._cleanup_expired()  # Enforce TTL
             for key in list(remaining):
                 result_key = self._result_key(session_id, key)
                 task_result = self.results.get(result_key)
@@ -384,19 +386,32 @@ class InMemoryBackend(BaseBackend):
         keys: list[str],
         timeout: float = 30.0,
     ) -> tuple[str, Any] | None:
-        """Wait for any task to complete. Returns (key, value) or None."""
-        deadline = time() + timeout
+        """Wait for any task to complete. Returns (key, value) or None.
 
-        while time() < deadline:
-            for key in keys:
+        Returns early if all tasks have finished (failed/cancelled) without success.
+        """
+        deadline = time() + timeout
+        remaining = set(keys)
+
+        while remaining and time() < deadline:
+            self._cleanup_expired()  # Enforce TTL
+            for key in list(remaining):
                 result_key = self._result_key(session_id, key)
                 task_result = self.results.get(result_key)
 
-                if task_result is not None and task_result.status == TaskStatus.COMPLETED:
+                if task_result is None:
+                    # Task expired or doesn't exist
+                    remaining.discard(key)
+                elif task_result.status == TaskStatus.COMPLETED:
                     return (key, task_result.value)
+                elif task_result.status in (TaskStatus.FAILED, TaskStatus.CANCELLED):
+                    # Task finished but not successfully
+                    remaining.discard(key)
 
-            await anyio.sleep(0.1)
+            if remaining:
+                await anyio.sleep(0.1)
 
+        # All tasks finished without success, or timeout
         return None
 
     def shutdown(self, wait: bool = True) -> None:
