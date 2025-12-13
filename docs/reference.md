@@ -10,9 +10,10 @@ Main application class.
 from fasthooks import HookApp
 
 app = HookApp(
-    state_dir=None,    # Directory for persistent state files
-    log_dir=None,      # Directory for JSONL event logs
-    log_level="INFO",  # Logging verbosity
+    state_dir=None,       # Directory for persistent state files
+    log_dir=None,         # Directory for JSONL event logs
+    log_level="INFO",     # Logging verbosity
+    task_backend=None,    # Backend for background tasks (default: InMemoryBackend)
 )
 ```
 
@@ -130,6 +131,7 @@ assert response.decision == "deny"
 
 ```python
 from fasthooks.depends import State, Transcript
+from fasthooks.tasks import BackgroundTasks, PendingResults
 
 @app.pre_tool("Bash")
 def handler(event, state: State, transcript: Transcript):
@@ -139,6 +141,133 @@ def handler(event, state: State, transcript: Transcript):
     # transcript: parsed conversation history
     stats = transcript.stats
     print(f"Tokens: {stats.total_tokens}")
+
+@app.pre_tool("Write")
+def with_tasks(event, tasks: BackgroundTasks, pending: PendingResults):
+    # tasks: spawn background work
+    # pending: retrieve completed results
+    pass
+```
+
+## Background Tasks
+
+### Task Definition
+
+```python
+from fasthooks.tasks import task
+
+@task
+def simple_task(x: int) -> int:
+    return x * 2
+
+@task(ttl=600, priority=5)
+def with_options(query: str) -> str:
+    return search(query)
+
+@task(transform=lambda r: r[:100])
+def with_transform() -> str:
+    return long_string()
+```
+
+### BackgroundTasks
+
+```python
+from fasthooks.tasks import BackgroundTasks
+
+@app.pre_tool("Write")
+def handler(event, tasks: BackgroundTasks):
+    tasks.add(my_task, arg1, key="unique-key")
+    tasks.add(other_task, data, key="other", ttl=600)
+    tasks.cancel("unique-key")
+    tasks.cancel_all()
+```
+
+### PendingResults
+
+```python
+from fasthooks.tasks import PendingResults
+
+@app.on_prompt()
+def handler(event, pending: PendingResults):
+    result = pending.pop("key")              # Pop completed result
+    results = pending.pop_all()              # Pop all completed
+    errors = pending.pop_errors()            # Pop failed as [(key, error), ...]
+    task_result = pending.get("key")         # Get TaskResult without removing
+    has_results = pending.has("key")         # Check if ready
+
+    # Async waiting
+    result = await pending.wait("key", timeout=10.0)
+    results = await pending.wait_all(["k1", "k2"], timeout=30.0)
+    key, result = await pending.wait_any(["k1", "k2"])
+```
+
+### TaskResult
+
+```python
+from fasthooks.tasks import TaskResult, TaskStatus
+
+result: TaskResult
+result.id           # str - Unique task ID
+result.session_id   # str - Session that created this task
+result.key          # str - User-provided key
+result.status       # TaskStatus - PENDING, RUNNING, COMPLETED, FAILED, CANCELLED
+result.value        # Any - Result value (if completed)
+result.error        # Exception | None - Error (if failed)
+result.is_finished  # bool - True if done (success, fail, or cancelled)
+```
+
+## Claude Agent SDK Integration
+
+Requires: `pip install fasthooks[claude]`
+
+### ClaudeAgent
+
+```python
+from fasthooks.contrib.claude import ClaudeAgent
+
+agent = ClaudeAgent(
+    model="haiku",                    # haiku, sonnet, opus
+    system_prompt="You are helpful.",
+    allowed_tools=["Read", "Grep"],
+    max_turns=5,
+    max_budget_usd=0.10,
+    cwd="/path/to/project",
+)
+
+# Query Claude
+response = await agent.query("What is 2+2?")
+
+# Override per-query
+response = await agent.query(
+    "Analyze this",
+    system_prompt="Override prompt",
+    max_turns=3,
+)
+
+# As context manager
+async with ClaudeAgent(model="haiku") as agent:
+    response = await agent.query("Hello")
+```
+
+### @agent_task Decorator
+
+```python
+from fasthooks.contrib.claude import ClaudeAgent, agent_task
+
+@agent_task(
+    model="haiku",
+    system_prompt="You review code.",
+    allowed_tools=["Read"],
+    ttl=600,
+    priority=5,
+)
+async def review_code(agent: ClaudeAgent, code: str) -> str:
+    return await agent.query(f"Review:\n{code}")
+
+# Use with BackgroundTasks
+@app.pre_tool("Write")
+def on_write(event, tasks: BackgroundTasks):
+    tasks.add(review_code, event.content, key="review")
 ```
 
 ## Blueprint
