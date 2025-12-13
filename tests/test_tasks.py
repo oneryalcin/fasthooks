@@ -446,22 +446,61 @@ def test_inmemory_backend_enqueue():
     backend.shutdown()
 
 
-def test_inmemory_backend_cancel():
-    """Test InMemoryBackend cancel."""
+def test_inmemory_backend_cancel_pending():
+    """Test InMemoryBackend cancel succeeds for pending tasks."""
+    backend = InMemoryBackend(max_workers=1)
+
+    @task
+    def blocker() -> str:
+        time.sleep(2)
+        return "blocker"
+
+    @task
+    def pending_task() -> str:
+        return "pending"
+
+    # First task blocks the single worker
+    backend.enqueue(blocker, (), {}, session_id="s1", key="blocker")
+
+    # Second task will be pending (worker busy)
+    result = backend.enqueue(pending_task, (), {}, session_id="s1", key="pending")
+    time.sleep(0.1)  # Give time for first task to start
+    assert result.status == TaskStatus.PENDING
+
+    # Cancel the pending task - should succeed
+    cancelled = backend.cancel("s1", "pending")
+    assert cancelled is True
+    assert result.status == TaskStatus.CANCELLED
+
+    backend.shutdown(wait=False)
+
+
+def test_inmemory_backend_cancel_running_returns_false():
+    """Test InMemoryBackend cancel returns False for running tasks."""
     backend = InMemoryBackend(max_workers=1)
 
     @task
     def slow_task() -> str:
-        time.sleep(1)
+        time.sleep(2)
         return "done"
 
-    # Enqueue but don't wait
-    backend.enqueue(slow_task, (), {}, session_id="s1", key="slow")
+    result = backend.enqueue(slow_task, (), {}, session_id="s1", key="slow")
 
-    # Cancel immediately
+    # Wait for task to start running
+    deadline = time.time() + 5.0
+    while result.status == TaskStatus.PENDING:
+        if time.time() > deadline:
+            raise TimeoutError("Task never started")
+        time.sleep(0.05)
+
+    assert result.status == TaskStatus.RUNNING
+
+    # Cancel should return False for running task
     cancelled = backend.cancel("s1", "slow")
-    # May or may not succeed depending on timing
-    assert isinstance(cancelled, bool)
+    assert cancelled is False
+
+    # Task should still be running (not cancelled)
+    assert result.status == TaskStatus.RUNNING
 
     backend.shutdown(wait=False)
 

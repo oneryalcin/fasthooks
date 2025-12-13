@@ -265,7 +265,12 @@ class InMemoryBackend(BaseBackend):
             )
 
     def cancel(self, session_id: str, key: str) -> bool:
-        """Cancel a pending/running task."""
+        """Cancel a pending task.
+
+        Returns True only if the task was actually cancelled. Returns False
+        if the task doesn't exist, is already finished, or is already running
+        (running tasks cannot be cancelled in ThreadPoolExecutor).
+        """
         result_key = self._result_key(session_id, key)
 
         with self._lock:
@@ -276,26 +281,46 @@ class InMemoryBackend(BaseBackend):
             if task_result.is_finished:
                 return False
 
-            # Cancel the future if possible
+            # Can only cancel pending tasks, not running ones
+            if task_result.status == TaskStatus.RUNNING:
+                return False
+
+            # Try to cancel the future
             future = self.futures.get(result_key)
             if future is not None:
-                future.cancel()
+                cancelled = future.cancel()
+                if not cancelled:
+                    # Future already started running
+                    return False
 
             task_result.set_cancelled()
             return True
 
     def cancel_all(self, session_id: str) -> int:
-        """Cancel all tasks for a session. Returns count cancelled."""
+        """Cancel all pending tasks for a session. Returns count cancelled.
+
+        Only cancels PENDING tasks. Running tasks cannot be cancelled.
+        """
         cancelled = 0
 
         with self._lock:
             for result_key, task_result in self.results.items():
-                if task_result.session_id == session_id and not task_result.is_finished:
-                    future = self.futures.get(result_key)
-                    if future is not None:
-                        future.cancel()
-                    task_result.set_cancelled()
-                    cancelled += 1
+                if task_result.session_id != session_id:
+                    continue
+                if task_result.is_finished:
+                    continue
+                # Can only cancel pending tasks
+                if task_result.status != TaskStatus.PENDING:
+                    continue
+
+                future = self.futures.get(result_key)
+                if future is not None:
+                    if not future.cancel():
+                        # Already started running
+                        continue
+
+                task_result.set_cancelled()
+                cancelled += 1
 
         return cancelled
 
