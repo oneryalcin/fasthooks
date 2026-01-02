@@ -26,6 +26,12 @@ def check(event, transcript: Transcript, state: State):
 
 ## Available Dependencies
 
+| Dependency | Description |
+|------------|-------------|
+| `Transcript` | Conversation history and statistics |
+| `State` | Persistent session-scoped storage |
+| `Tasks` | Background task enqueue + results |
+
 ### Transcript
 
 Access the full conversation history. **Lazy-loaded and cached** - no performance penalty if unused.
@@ -107,6 +113,25 @@ def rate_limit(event, state: State):
 | `key in state` | Check existence |
 
 State is scoped to the session - each session gets its own JSON file.
+
+### Tasks
+
+Enqueue background tasks and retrieve results. See [Background Tasks](background-tasks.md) for full details.
+
+```python
+from fasthooks.tasks import Tasks
+
+@app.pre_tool("Write")
+def on_write(event, tasks: Tasks):
+    # Enqueue (key defaults to function name)
+    tasks.add(analyze_code, event.content)
+
+@app.on_prompt()
+def check(event, tasks: Tasks):
+    # Pop by function reference
+    if result := tasks.pop(analyze_code):
+        return allow(message=f"Analysis: {result}")
+```
 
 ## Use Cases
 

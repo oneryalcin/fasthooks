@@ -38,6 +38,8 @@ if __name__ == "__main__":
 - **Typed events** - Autocomplete for `event.command`, `event.file_path`, etc.
 - **Decorators** - `@app.pre_tool("Bash")`, `@app.on_stop()`, `@app.on_session_start()`
 - **Dependency injection** - `def handler(event, transcript: Transcript, state: State)`
+- **Background tasks** - Spawn async work that feeds back in subsequent hooks
+- **Claude sub-agents** - Use Claude Agent SDK for AI-powered background tasks
 - **Blueprints** - Compose handlers from multiple modules
 - **Middleware** - Cross-cutting concerns like timing and logging
 - **Guards** - `@app.pre_tool("Bash", when=lambda e: "sudo" in e.command)`
@@ -224,6 +226,53 @@ def timing(event, call_next):
     response = call_next(event)
     print(f"Took {time.time() - start:.3f}s")
     return response
+```
+
+### Background Tasks
+
+Spawn async work that completes independently and feeds back results in subsequent hooks:
+
+```python
+from fasthooks import HookApp, allow
+from fasthooks.tasks import task, Tasks
+
+@task
+def analyze_code(code: str) -> str:
+    # Long-running analysis...
+    return "Analysis result"
+
+app = HookApp()
+
+@app.pre_tool("Write")
+def on_write(event, tasks: Tasks):
+    # Spawn task (key defaults to function name)
+    tasks.add(analyze_code, event.content)
+    return allow()
+
+@app.on_prompt()
+def check_results(event, tasks: Tasks):
+    # Pop by function reference (no string typos)
+    if result := tasks.pop(analyze_code):
+        return allow(message=f"Previous analysis: {result}")
+    return allow()
+```
+
+### Claude Sub-Agents
+
+Use Claude Agent SDK for AI-powered background tasks (requires `pip install fasthooks[claude]`):
+
+```python
+from fasthooks.contrib.claude import ClaudeAgent, agent_task
+from fasthooks.tasks import Tasks
+
+@agent_task(model="haiku", system_prompt="You review code for bugs.")
+async def review_code(agent: ClaudeAgent, code: str) -> str:
+    return await agent.query(f"Review this code:\n{code}")
+
+@app.pre_tool("Write")
+def on_write(event, tasks: Tasks):
+    tasks.add(review_code, event.content)
+    return allow()
 ```
 
 ## Testing
