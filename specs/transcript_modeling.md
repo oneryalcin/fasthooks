@@ -1415,15 +1415,15 @@ The `message.usage` field in AssistantMessage contains detailed token metrics:
 1. [x] Examine real transcript files to validate model
 2. [x] Interview stakeholder on design decisions
 3. [x] Implement Entry parsing (JSONL → Pydantic models)
-4. [ ] Implement proxy pattern for _raw sync
+4. [-] Implement proxy pattern for _raw sync (not needed - model_dump preserves structure via model_extra)
 5. [x] Implement relationship indexing (tool_use, tool_result, uuid, request_id, snapshot)
-6. [ ] Implement CRUD with chain management
+6. [x] Implement CRUD with chain management (remove, remove_tree, insert, append, replace, save)
 7. [x] Implement Turn grouping (by requestId)
 8. [ ] Implement TranscriptView query interface
 9. [ ] Implement factories and presets
 10. [ ] Implement export formats
 11. [ ] Add to fasthooks DI system (replace depends.Transcript)
-12. [x] Write tests (41 tests)
+12. [x] Write tests (51 tests)
 13. [ ] Write documentation/cookbook
 
 ### Implementation Notes (v1)
@@ -1435,3 +1435,6 @@ The `message.usage` field in AssistantMessage contains detailed token metrics:
 - **`get_logical_parent()`**: For CompactBoundary, returns entry via `logicalParentUuid` (preserves chain across compaction)
 - **`find_snapshot()`**: Finds FileHistorySnapshot by message_id
 - **Turn forward reference**: Uses `list[Any]` to avoid Pydantic forward reference issues with AssistantMessage
+- **CRUD operations**: `remove(relink=True)`, `remove_tree()`, `insert()`, `append()`, `replace()` all manage parentUuid chain
+- **`save()`**: Atomic write via temp file + rename; uses `to_dict()` which serializes with camelCase aliases
+- **No proxy pattern needed**: `model_dump(by_alias=True)` includes `model_extra`, preserving original nested structure

@@ -335,6 +335,154 @@ class Transcript:
                         result.append(Turn(request_id=entry.request_id, entries=entries))
         return result
 
+    # === CRUD Operations ===
+
+    def save(self) -> None:
+        """Save entries to JSONL file (atomic write).
+
+        Writes archived entries first, then current entries.
+        Uses temp file + rename for atomicity.
+        """
+        lines = []
+        for entry in self._archived:
+            lines.append(json.dumps(entry.to_dict()))
+        for entry in self.entries:
+            lines.append(json.dumps(entry.to_dict()))
+
+        content = "\n".join(lines) + "\n" if lines else ""
+
+        # Atomic write via temp file
+        tmp_path = self.path.with_suffix(".jsonl.tmp")
+        tmp_path.write_text(content)
+        tmp_path.rename(self.path)
+
+    def remove(self, entry: Entry, relink: bool = True) -> None:
+        """Remove entry from transcript.
+
+        Args:
+            entry: Entry to remove
+            relink: If True, children get entry's parent_uuid.
+                    If False, children become orphaned.
+        """
+        if entry not in self.entries:
+            raise ValueError(f"Entry {entry.uuid} not in transcript")
+
+        if relink:
+            # Relink children to entry's parent
+            for e in self.entries:
+                if isinstance(e, Entry) and e.parent_uuid == entry.uuid:
+                    e.parent_uuid = entry.parent_uuid
+
+        self.entries.remove(entry)
+        self._remove_from_indexes(entry)
+
+    def remove_tree(self, entry: Entry) -> list[Entry]:
+        """Remove entry and all descendants.
+
+        Returns list of removed entries.
+        """
+        if entry not in self.entries:
+            raise ValueError(f"Entry {entry.uuid} not in transcript")
+
+        removed = []
+        to_remove = [entry]
+
+        while to_remove:
+            current = to_remove.pop(0)
+            if current in self.entries:
+                # Find children before removing
+                children = [
+                    e
+                    for e in self.entries
+                    if isinstance(e, Entry) and e.parent_uuid == current.uuid
+                ]
+                to_remove.extend(children)
+                self.entries.remove(current)
+                self._remove_from_indexes(current)
+                removed.append(current)
+
+        return removed
+
+    def insert(self, index: int, entry: Entry) -> None:
+        """Insert entry at position, rewiring parent_uuid chain.
+
+        The new entry's parent_uuid is set to the previous entry's uuid.
+        The following entry's parent_uuid is set to the new entry's uuid.
+        """
+        if index < 0 or index > len(self.entries):
+            raise IndexError(f"Index {index} out of range")
+
+        # Set new entry's parent
+        if index > 0:
+            prev_entry = self.entries[index - 1]
+            if isinstance(prev_entry, Entry):
+                entry.parent_uuid = prev_entry.uuid
+
+        # Relink the entry that will follow
+        if index < len(self.entries):
+            next_entry = self.entries[index]
+            if isinstance(next_entry, Entry):
+                next_entry.parent_uuid = entry.uuid
+
+        self.entries.insert(index, entry)
+        self._index_entry(entry)
+
+    def append(self, entry: Entry) -> None:
+        """Add entry to end of transcript.
+
+        Sets parent_uuid to last entry's uuid.
+        """
+        if self.entries:
+            last = self.entries[-1]
+            if isinstance(last, Entry):
+                entry.parent_uuid = last.uuid
+
+        self.entries.append(entry)
+        self._index_entry(entry)
+
+    def replace(self, old: Entry, new: Entry) -> None:
+        """Replace entry, preserving position in chain.
+
+        The new entry inherits old's parent_uuid.
+        Children of old are relinked to new.
+        """
+        if old not in self.entries:
+            raise ValueError(f"Entry {old.uuid} not in transcript")
+
+        idx = self.entries.index(old)
+        new.parent_uuid = old.parent_uuid
+
+        # Relink children
+        for e in self.entries:
+            if isinstance(e, Entry) and e.parent_uuid == old.uuid:
+                e.parent_uuid = new.uuid
+
+        self.entries[idx] = new
+        self._remove_from_indexes(old)
+        self._index_entry(new)
+
+    def _remove_from_indexes(self, entry: TranscriptEntry) -> None:
+        """Remove entry from lookup indexes."""
+        if isinstance(entry, Entry) and entry.uuid:
+            self._uuid_index.pop(entry.uuid, None)
+
+        if isinstance(entry, AssistantMessage):
+            for block in entry.content:
+                if isinstance(block, ToolUseBlock):
+                    self._tool_use_index.pop(block.id, None)
+            if entry.request_id:
+                entries = self._request_id_index.get(entry.request_id, [])
+                if entry in entries:
+                    entries.remove(entry)
+                    if not entries:
+                        self._request_id_index.pop(entry.request_id, None)
+        elif isinstance(entry, UserMessage) and entry.is_tool_result:
+            for block in entry.tool_results:
+                self._tool_result_index.pop(block.tool_use_id, None)
+        elif isinstance(entry, FileHistorySnapshot):
+            if entry.message_id:
+                self._snapshot_index.pop(entry.message_id, None)
+
     # === Iteration ===
 
     def __iter__(self) -> Iterator[TranscriptEntry]:

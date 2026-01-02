@@ -44,6 +44,16 @@ class Entry(BaseModel):
     # Internal tracking
     _line_number: int | None = None
 
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize entry to dict for JSONL output.
+
+        Uses camelCase aliases and excludes internal fields.
+        """
+        data = self.model_dump(by_alias=True, exclude_none=True)
+        # Remove internal fields
+        data.pop("_line_number", None)
+        return data
+
 
 class UserMessage(Entry):
     """User's input to Claude."""
@@ -250,6 +260,12 @@ class FileHistorySnapshot(BaseModel):
     is_snapshot_update: bool = Field(default=False, alias="isSnapshotUpdate")
 
     _line_number: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to dict for JSONL output."""
+        data = self.model_dump(by_alias=True, exclude_none=True)
+        data.pop("_line_number", None)
+        return data
 
 
 # Type alias for all entry types

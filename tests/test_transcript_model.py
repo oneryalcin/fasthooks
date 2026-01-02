@@ -677,3 +677,142 @@ class TestNewFeatures:
         t = transcript_with_meta
         t.include_meta = True
         assert len(t.user_messages) == 3
+
+
+class TestCRUDOperations:
+    """Test CRUD operations: save, remove, insert, append, replace."""
+
+    @pytest.fixture
+    def transcript_with_chain(self, tmp_path):
+        """Create transcript with linked entries."""
+        import json
+
+        path = tmp_path / "chain.jsonl"
+        entries = [
+            {"type": "user", "uuid": "u1", "parentUuid": None, "message": {"content": "First"}},
+            {"type": "assistant", "uuid": "a1", "parentUuid": "u1", "message": {"content": [{"type": "text", "text": "Response"}]}},
+            {"type": "user", "uuid": "u2", "parentUuid": "a1", "message": {"content": "Second"}},
+            {"type": "assistant", "uuid": "a2", "parentUuid": "u2", "message": {"content": [{"type": "text", "text": "Response2"}]}},
+        ]
+        with open(path, "w") as f:
+            for e in entries:
+                f.write(json.dumps(e) + "\n")
+
+        t = Transcript(path)
+        t.load()
+        return t
+
+    def test_remove_with_relink(self, transcript_with_chain):
+        """Remove entry should relink children to parent."""
+        t = transcript_with_chain
+        a1 = t.find_by_uuid("a1")
+        t.remove(a1, relink=True)
+
+        assert len(t.entries) == 3
+        assert t.find_by_uuid("a1") is None
+        u2 = t.find_by_uuid("u2")
+        assert u2.parent_uuid == "u1"  # Relinked to a1's parent
+
+    def test_remove_without_relink(self, transcript_with_chain):
+        """Remove without relink leaves orphans."""
+        t = transcript_with_chain
+        a1 = t.find_by_uuid("a1")
+        t.remove(a1, relink=False)
+
+        u2 = t.find_by_uuid("u2")
+        assert u2.parent_uuid == "a1"  # Still points to removed entry
+
+    def test_remove_tree(self, transcript_with_chain):
+        """Remove tree should remove entry and all descendants."""
+        t = transcript_with_chain
+        a1 = t.find_by_uuid("a1")
+        removed = t.remove_tree(a1)
+
+        assert len(removed) == 3  # a1, u2, a2
+        assert len(t.entries) == 1
+        assert t.find_by_uuid("u1") is not None
+        assert t.find_by_uuid("a1") is None
+        assert t.find_by_uuid("u2") is None
+
+    def test_insert_rewires_chain(self, transcript_with_chain):
+        """Insert should rewire parent_uuid chain."""
+        t = transcript_with_chain
+        new_entry = Entry(type="system", uuid="s1")
+        t.insert(1, new_entry)
+
+        assert len(t.entries) == 5
+        assert new_entry.parent_uuid == "u1"  # Parent is previous entry
+        a1 = t.find_by_uuid("a1")
+        assert a1.parent_uuid == "s1"  # Next entry relinked
+
+    def test_insert_at_start(self, transcript_with_chain):
+        """Insert at index 0 should have no parent."""
+        t = transcript_with_chain
+        new_entry = Entry(type="system", uuid="s0")
+        t.insert(0, new_entry)
+
+        assert new_entry.parent_uuid is None
+        u1 = t.find_by_uuid("u1")
+        assert u1.parent_uuid == "s0"
+
+    def test_append_sets_parent(self, transcript_with_chain):
+        """Append should set parent to last entry."""
+        t = transcript_with_chain
+        new_entry = Entry(type="user", uuid="u3")
+        t.append(new_entry)
+
+        assert len(t.entries) == 5
+        assert new_entry.parent_uuid == "a2"
+
+    def test_replace_preserves_chain(self, transcript_with_chain):
+        """Replace should preserve chain position."""
+        t = transcript_with_chain
+        old = t.find_by_uuid("a1")
+        new = Entry(type="system", uuid="replacement")
+        t.replace(old, new)
+
+        assert t.find_by_uuid("a1") is None
+        assert new.parent_uuid == "u1"  # Inherited from old
+        u2 = t.find_by_uuid("u2")
+        assert u2.parent_uuid == "replacement"  # Relinked
+
+    def test_save_and_reload(self, transcript_with_chain):
+        """Save should write entries and reload should preserve them."""
+        t = transcript_with_chain
+        path = t.path
+
+        # Modify
+        new_entry = Entry(type="system", uuid="added")
+        t.append(new_entry)
+        t.save()
+
+        # Reload
+        t2 = Transcript(path)
+        t2.load()
+        assert len(t2.entries) == 5
+        assert t2.find_by_uuid("added") is not None
+        added = t2.find_by_uuid("added")
+        assert added.parent_uuid == "a2"
+
+    def test_to_dict_preserves_structure(self, transcript_with_chain):
+        """to_dict should preserve camelCase and nested structure."""
+        t = transcript_with_chain
+        a1 = t.find_by_uuid("a1")  # Has parentUuid set
+        data = a1.to_dict()
+
+        assert "parentUuid" in data  # camelCase alias
+        assert data["parentUuid"] == "u1"
+        assert "requestId" in data or "message" in data  # Has nested structure
+        assert "_line_number" not in data  # Internal field excluded
+
+    def test_remove_updates_indexes(self, transcript_with_chain):
+        """Remove should update lookup indexes."""
+        t = transcript_with_chain
+        a1 = t.find_by_uuid("a1")
+        tool_use_count_before = len(t.tool_uses)
+
+        t.remove(a1)
+
+        assert t.find_by_uuid("a1") is None
+        # Index should be updated
+        assert a1 not in t.assistant_messages
