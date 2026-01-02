@@ -19,10 +19,12 @@ from fasthooks.transcript.entries import (
     UserMessage,
     parse_entry,
 )
+from fasthooks.transcript.turn import Turn
 
 __all__ = [
     # Core
     "Transcript",
+    "Turn",
     # Blocks
     "ContentBlock",
     "TextBlock",

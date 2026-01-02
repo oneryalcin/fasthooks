@@ -458,3 +458,222 @@ class TestTranscriptViews:
         t = transcript_with_entries
         assert len(t.errors) == 1
         assert t.errors[0].tool_use_id == "t2"
+
+
+class TestNewFeatures:
+    """Test new features: turns, include_archived, logical_parent, etc."""
+
+    @pytest.fixture
+    def transcript_with_turns(self, tmp_path):
+        """Create transcript with multiple entries per turn (same requestId)."""
+        import json
+
+        path = tmp_path / "turns.jsonl"
+        entries = [
+            {
+                "type": "user",
+                "uuid": "u1",
+                "parentUuid": None,
+                "message": {"content": "Hello"},
+            },
+            {
+                "type": "assistant",
+                "uuid": "a1",
+                "parentUuid": "u1",
+                "requestId": "req_001",
+                "message": {
+                    "content": [{"type": "thinking", "thinking": "Let me think...", "signature": ""}],
+                },
+            },
+            {
+                "type": "assistant",
+                "uuid": "a2",
+                "parentUuid": "a1",
+                "requestId": "req_001",
+                "message": {
+                    "content": [
+                        {"type": "tool_use", "id": "t1", "name": "Bash", "input": {}},
+                    ],
+                },
+            },
+            {
+                "type": "user",
+                "uuid": "u2",
+                "parentUuid": "a2",
+                "message": {
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": "t1", "content": "ok", "is_error": False},
+                    ],
+                },
+            },
+            {
+                "type": "assistant",
+                "uuid": "a3",
+                "parentUuid": "u2",
+                "requestId": "req_001",
+                "message": {
+                    "content": [{"type": "text", "text": "Done!"}],
+                    "stop_reason": "end_turn",
+                },
+            },
+        ]
+        with open(path, "w") as f:
+            for e in entries:
+                f.write(json.dumps(e) + "\n")
+
+        t = Transcript(path)
+        t.load()
+        return t
+
+    def test_turns_grouping(self, transcript_with_turns):
+        """Entries with same requestId should group into a Turn."""
+        t = transcript_with_turns
+        turns = t.turns
+        assert len(turns) == 1
+        turn = turns[0]
+        assert turn.request_id == "req_001"
+        assert len(turn.entries) == 3  # a1, a2, a3
+
+    def test_turn_properties(self, transcript_with_turns):
+        """Turn should expose combined properties."""
+        t = transcript_with_turns
+        turn = t.turns[0]
+        assert "Let me think" in turn.thinking
+        assert "Done!" in turn.text
+        assert len(turn.tool_uses) == 1
+        assert turn.is_complete is True
+        assert turn.has_tool_use is True
+
+    def test_get_entries_by_request_id(self, transcript_with_turns):
+        """Should find all entries with given requestId."""
+        t = transcript_with_turns
+        entries = t.get_entries_by_request_id("req_001")
+        assert len(entries) == 3
+
+    @pytest.fixture
+    def transcript_with_compact(self, tmp_path):
+        """Create transcript with compaction."""
+        import json
+
+        path = tmp_path / "compact.jsonl"
+        entries = [
+            # Archived entries
+            {"type": "user", "uuid": "old1", "parentUuid": None, "message": {"content": "Old message"}},
+            {"type": "assistant", "uuid": "old2", "parentUuid": "old1", "message": {"content": []}},
+            # Compact boundary
+            {
+                "type": "system",
+                "subtype": "compact_boundary",
+                "uuid": "compact1",
+                "parentUuid": None,
+                "logicalParentUuid": "old2",
+                "compactMetadata": {"trigger": "manual"},
+            },
+            # Current entries
+            {"type": "user", "uuid": "new1", "parentUuid": "compact1", "message": {"content": "New message"}},
+        ]
+        with open(path, "w") as f:
+            for e in entries:
+                f.write(json.dumps(e) + "\n")
+
+        t = Transcript(path)
+        t.load()
+        return t
+
+    def test_get_logical_parent(self, transcript_with_compact):
+        """CompactBoundary should return logical parent."""
+        t = transcript_with_compact
+        boundary = t.compact_boundaries[0]
+        logical_parent = t.get_logical_parent(boundary)
+        assert logical_parent is not None
+        assert logical_parent.uuid == "old2"
+
+    def test_include_archived_default_false(self, transcript_with_compact):
+        """Views should exclude archived by default."""
+        t = transcript_with_compact
+        assert len(t.user_messages) == 1  # Only new1
+        assert t.user_messages[0].uuid == "new1"
+
+    def test_include_archived_true(self, transcript_with_compact):
+        """Views should include archived when flag set."""
+        t = transcript_with_compact
+        t.include_archived = True
+        assert len(t.user_messages) == 2  # old1 and new1
+
+    def test_get_user_messages_with_param(self, transcript_with_compact):
+        """get_user_messages should accept include_archived param."""
+        t = transcript_with_compact
+        assert len(t.get_user_messages(include_archived=False)) == 1
+        assert len(t.get_user_messages(include_archived=True)) == 2
+
+    def test_get_children_with_archived(self, transcript_with_compact):
+        """get_children should optionally search archived."""
+        t = transcript_with_compact
+        old1 = t.find_by_uuid("old1")
+        # Default: only search current
+        assert len(t.get_children(old1)) == 0
+        # With include_archived
+        children = t.get_children(old1, include_archived=True)
+        assert len(children) == 1
+        assert children[0].uuid == "old2"
+
+    @pytest.fixture
+    def transcript_with_snapshots(self, tmp_path):
+        """Create transcript with file history snapshots."""
+        import json
+
+        path = tmp_path / "snapshots.jsonl"
+        entries = [
+            {"type": "user", "uuid": "u1", "message": {"content": "Create file"}},
+            {
+                "type": "file-history-snapshot",
+                "messageId": "u1",
+                "snapshot": {"trackedFileBackups": {"test.py": {"version": 1}}},
+                "isSnapshotUpdate": False,
+            },
+        ]
+        with open(path, "w") as f:
+            for e in entries:
+                f.write(json.dumps(e) + "\n")
+
+        t = Transcript(path)
+        t.load()
+        return t
+
+    def test_find_snapshot(self, transcript_with_snapshots):
+        """Should find snapshot by message_id."""
+        t = transcript_with_snapshots
+        snapshot = t.find_snapshot("u1")
+        assert snapshot is not None
+        assert "test.py" in snapshot.snapshot["trackedFileBackups"]
+
+    @pytest.fixture
+    def transcript_with_meta(self, tmp_path):
+        """Create transcript with meta entries."""
+        import json
+
+        path = tmp_path / "meta.jsonl"
+        entries = [
+            {"type": "user", "uuid": "u1", "message": {"content": "Normal"}, "isMeta": False},
+            {"type": "user", "uuid": "u2", "message": {"content": "Meta"}, "isMeta": True},
+            {"type": "user", "uuid": "u3", "message": {"content": "Visible only"}, "isVisibleInTranscriptOnly": True},
+        ]
+        with open(path, "w") as f:
+            for e in entries:
+                f.write(json.dumps(e) + "\n")
+
+        t = Transcript(path)
+        t.load()
+        return t
+
+    def test_meta_filtered_by_default(self, transcript_with_meta):
+        """Meta entries should be filtered by default."""
+        t = transcript_with_meta
+        assert len(t.user_messages) == 1
+        assert t.user_messages[0].uuid == "u1"
+
+    def test_include_meta_true(self, transcript_with_meta):
+        """Setting include_meta=True should include all entries."""
+        t = transcript_with_meta
+        t.include_meta = True
+        assert len(t.user_messages) == 3

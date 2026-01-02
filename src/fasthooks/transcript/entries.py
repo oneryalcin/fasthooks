@@ -79,6 +79,13 @@ class UserMessage(Entry):
         return isinstance(self._content, list)
 
     @property
+    def tool_results(self) -> list[ToolResultBlock]:
+        """Get tool results if this is a tool result message."""
+        if isinstance(self._content, list):
+            return self._content
+        return []
+
+    @property
     def text(self) -> str:
         """Get text content if it's a text message."""
         if isinstance(self._content, str):
@@ -253,6 +260,7 @@ TranscriptEntry = (
     | CompactBoundary
     | StopHookSummary
     | FileHistorySnapshot
+    | Entry  # Fallback for unknown types
 )
 
 

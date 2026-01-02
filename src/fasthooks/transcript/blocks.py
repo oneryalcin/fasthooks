@@ -50,7 +50,7 @@ class ToolResultBlock(BaseModel):
 
     type: Literal["tool_result"] = "tool_result"
     tool_use_id: str = ""
-    content: str = ""
+    content: str | list[dict[str, Any]] = ""  # Can be string or structured content
     is_error: bool = False
 
     # Private - not serialized
@@ -98,17 +98,17 @@ def parse_content_block(
     if block_type == "text":
         return TextBlock.model_validate(data)
     elif block_type == "tool_use":
-        block = ToolUseBlock.model_validate(data)
+        tool_use = ToolUseBlock.model_validate(data)
         if transcript:
-            block.set_transcript(transcript)
-        return block
+            tool_use.set_transcript(transcript)
+        return tool_use
     elif block_type == "tool_result":
-        block = ToolResultBlock.model_validate(data)
+        tool_result = ToolResultBlock.model_validate(data)
         if transcript:
-            block.set_transcript(transcript)
+            tool_result.set_transcript(transcript)
         if tool_use_result:
-            block.set_tool_use_result(tool_use_result)
-        return block
+            tool_result.set_tool_use_result(tool_use_result)
+        return tool_result
     elif block_type == "thinking":
         return ThinkingBlock.model_validate(data)
     else:
@@ -116,6 +116,4 @@ def parse_content_block(
         # We need to override type since TextBlock expects Literal["text"]
         data_copy = dict(data)
         data_copy["type"] = "text"  # Override to satisfy Literal
-        block = TextBlock.model_validate(data_copy)
-        # Store original type in model_extra
-        return block
+        return TextBlock.model_validate(data_copy)

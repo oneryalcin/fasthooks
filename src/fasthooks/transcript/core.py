@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Iterator, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from fasthooks.transcript.blocks import ToolResultBlock, ToolUseBlock
 from fasthooks.transcript.entries import (
@@ -11,12 +12,14 @@ from fasthooks.transcript.entries import (
     CompactBoundary,
     Entry,
     FileHistorySnapshot,
-    StopHookSummary,
     SystemEntry,
     TranscriptEntry,
     UserMessage,
     parse_entry,
 )
+
+if TYPE_CHECKING:
+    from fasthooks.transcript.turn import Turn
 
 
 class Transcript:
@@ -53,9 +56,15 @@ class Transcript:
         self._tool_use_index: dict[str, ToolUseBlock] = {}
         self._tool_result_index: dict[str, ToolResultBlock] = {}
         self._uuid_index: dict[str, Entry] = {}
+        self._request_id_index: dict[str, list[AssistantMessage]] = {}
+        self._snapshot_index: dict[str, FileHistorySnapshot] = {}
 
         # Track if loaded
         self._loaded = False
+
+        # Default filtering options
+        self.include_archived: bool = False
+        self.include_meta: bool = False
 
     def load(self) -> None:
         """Load entries from JSONL file."""
@@ -68,6 +77,8 @@ class Transcript:
         self._tool_use_index = {}
         self._tool_result_index = {}
         self._uuid_index = {}
+        self._request_id_index = {}
+        self._snapshot_index = {}
 
         # Find last compact boundary to split archived vs current
         raw_entries: list[dict[str, Any]] = []
@@ -114,17 +125,25 @@ class Transcript:
         if isinstance(entry, Entry) and entry.uuid:
             self._uuid_index[entry.uuid] = entry
 
-        # Tool use/result indexes
+        # Tool use/result indexes + request_id index
         if isinstance(entry, AssistantMessage):
             for block in entry.content:
                 if isinstance(block, ToolUseBlock):
                     self._tool_use_index[block.id] = block
                     block.set_transcript(self)
+            # Index by request_id for turn grouping
+            if entry.request_id:
+                if entry.request_id not in self._request_id_index:
+                    self._request_id_index[entry.request_id] = []
+                self._request_id_index[entry.request_id].append(entry)
         elif isinstance(entry, UserMessage) and entry.is_tool_result:
-            for block in entry.content:
-                if isinstance(block, ToolResultBlock):
-                    self._tool_result_index[block.tool_use_id] = block
-                    block.set_transcript(self)
+            for block in entry.tool_results:
+                self._tool_result_index[block.tool_use_id] = block
+                block.set_transcript(self)
+        elif isinstance(entry, FileHistorySnapshot):
+            # Index snapshots by message_id
+            if entry.message_id:
+                self._snapshot_index[entry.message_id] = entry
 
     # === Relationship Lookups ===
 
@@ -137,44 +156,128 @@ class Transcript:
         return self._tool_result_index.get(tool_use_id)
 
     def find_by_uuid(self, uuid: str) -> Entry | None:
-        """Find entry by UUID."""
+        """Find entry by UUID (searches both current and archived)."""
         return self._uuid_index.get(uuid)
 
+    def find_snapshot(self, message_id: str) -> FileHistorySnapshot | None:
+        """Find file history snapshot by message_id."""
+        return self._snapshot_index.get(message_id)
+
     def get_parent(self, entry: Entry) -> Entry | None:
-        """Get parent entry via parent_uuid."""
+        """Get parent entry via parent_uuid (searches both current and archived)."""
         if entry.parent_uuid:
             return self.find_by_uuid(entry.parent_uuid)
         return None
 
-    def get_children(self, entry: Entry) -> list[Entry]:
-        """Get all entries with this entry as parent."""
+    def get_logical_parent(self, entry: Entry) -> Entry | None:
+        """Get logical parent, handling compact boundaries.
+
+        For CompactBoundary entries, returns the entry referenced by
+        logicalParentUuid (which preserves chain across compaction).
+        For other entries, returns the regular parent.
+        """
+        if isinstance(entry, CompactBoundary) and entry.logical_parent_uuid:
+            return self.find_by_uuid(entry.logical_parent_uuid)
+        return self.get_parent(entry)
+
+    def get_children(
+        self, entry: Entry, include_archived: bool | None = None
+    ) -> list[Entry]:
+        """Get all entries with this entry as parent.
+
+        Args:
+            entry: Entry to find children for
+            include_archived: Search archived entries too. Defaults to self.include_archived.
+        """
+        if include_archived is None:
+            include_archived = self.include_archived
+
+        source = self._archived + self.entries if include_archived else self.entries
         return [
-            e
-            for e in self.entries
-            if isinstance(e, Entry) and e.parent_uuid == entry.uuid
+            e for e in source if isinstance(e, Entry) and e.parent_uuid == entry.uuid
         ]
 
+    def get_entries_by_request_id(self, request_id: str) -> list[AssistantMessage]:
+        """Get all assistant messages with the same request_id (a single turn)."""
+        return self._request_id_index.get(request_id, [])
+
     # === Pre-built Views ===
+
+    def _get_source(self, include_archived: bool | None = None) -> list[TranscriptEntry]:
+        """Get entry source based on include_archived setting."""
+        if include_archived is None:
+            include_archived = self.include_archived
+        return self._archived + self.entries if include_archived else self.entries
+
+    def _filter_meta(self, entry: Entry) -> bool:
+        """Check if entry should be included based on meta/visibility settings."""
+        if self.include_meta:
+            return True
+        # Filter out meta entries unless include_meta is True
+        if isinstance(entry, UserMessage):
+            if entry.is_meta or entry.is_visible_in_transcript_only:
+                return False
+        return True
 
     @property
     def archived(self) -> list[TranscriptEntry]:
         """Entries before last compact boundary."""
         return self._archived
 
+    def get_user_messages(
+        self, include_archived: bool | None = None
+    ) -> list[UserMessage]:
+        """All user messages.
+
+        Args:
+            include_archived: Include archived entries. Defaults to self.include_archived.
+        """
+        return [
+            e
+            for e in self._get_source(include_archived)
+            if isinstance(e, UserMessage) and self._filter_meta(e)
+        ]
+
     @property
     def user_messages(self) -> list[UserMessage]:
-        """All user messages (excludes archived)."""
-        return [e for e in self.entries if isinstance(e, UserMessage)]
+        """All user messages (uses default include_archived setting)."""
+        return self.get_user_messages()
+
+    def get_assistant_messages(
+        self, include_archived: bool | None = None
+    ) -> list[AssistantMessage]:
+        """All assistant messages.
+
+        Args:
+            include_archived: Include archived entries. Defaults to self.include_archived.
+        """
+        return [
+            e
+            for e in self._get_source(include_archived)
+            if isinstance(e, AssistantMessage)
+        ]
 
     @property
     def assistant_messages(self) -> list[AssistantMessage]:
-        """All assistant messages (excludes archived)."""
-        return [e for e in self.entries if isinstance(e, AssistantMessage)]
+        """All assistant messages (uses default include_archived setting)."""
+        return self.get_assistant_messages()
+
+    def get_system_entries(
+        self, include_archived: bool | None = None
+    ) -> list[SystemEntry]:
+        """All system entries.
+
+        Args:
+            include_archived: Include archived entries. Defaults to self.include_archived.
+        """
+        return [
+            e for e in self._get_source(include_archived) if isinstance(e, SystemEntry)
+        ]
 
     @property
     def system_entries(self) -> list[SystemEntry]:
-        """All system entries (excludes archived)."""
-        return [e for e in self.entries if isinstance(e, SystemEntry)]
+        """All system entries (uses default include_archived setting)."""
+        return self.get_system_entries()
 
     @property
     def tool_uses(self) -> list[ToolUseBlock]:
@@ -193,14 +296,44 @@ class Transcript:
 
     @property
     def compact_boundaries(self) -> list[CompactBoundary]:
-        """All compaction markers (including archived)."""
+        """All compaction markers (always includes archived)."""
         all_entries = self._archived + self.entries
         return [e for e in all_entries if isinstance(e, CompactBoundary)]
 
+    def get_file_snapshots(
+        self, include_archived: bool | None = None
+    ) -> list[FileHistorySnapshot]:
+        """All file history snapshots.
+
+        Args:
+            include_archived: Include archived entries. Defaults to self.include_archived.
+        """
+        return [
+            e
+            for e in self._get_source(include_archived)
+            if isinstance(e, FileHistorySnapshot)
+        ]
+
     @property
     def file_snapshots(self) -> list[FileHistorySnapshot]:
-        """All file history snapshots."""
-        return [e for e in self.entries if isinstance(e, FileHistorySnapshot)]
+        """All file history snapshots (uses default include_archived setting)."""
+        return self.get_file_snapshots()
+
+    @property
+    def turns(self) -> list[Turn]:
+        """Group assistant messages by requestId into Turns."""
+        from fasthooks.transcript.turn import Turn
+
+        result = []
+        seen: set[str] = set()
+        for entry in self._get_source():
+            if isinstance(entry, AssistantMessage) and entry.request_id:
+                if entry.request_id not in seen:
+                    seen.add(entry.request_id)
+                    entries = self._request_id_index.get(entry.request_id, [])
+                    if entries:
+                        result.append(Turn(request_id=entry.request_id, entries=entries))
+        return result
 
     # === Iteration ===
 
@@ -211,4 +344,4 @@ class Transcript:
         return len(self.entries)
 
     def __repr__(self) -> str:
-        return f"Transcript({self.path}, entries={len(self.entries)}, archived={len(self._archived)})"
+        return f"Transcript({self.path}, entries={len(self.entries)}, archived={len(self._archived)})"  # noqa: E501

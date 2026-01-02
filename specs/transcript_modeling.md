@@ -64,6 +64,8 @@ Use cases prioritized:
 | **Query API** | Both fluent + raw iteration | Expressive chaining + Python-native loops |
 | **Analytics** | Basic `.stats` property | Essential metrics without bloat |
 | **Views** | Pre-built + generic query | `.errors`, `.tool_uses` + `.filter()`, `.where()` |
+| **Archived filtering** | `include_archived=False` default | Current window by default, full history on demand |
+| **Meta filtering** | `include_meta=False` default | Hide system meta entries, user can override |
 | **Export formats** | Multiple: JSONL, Markdown, HTML, JSON | Review, debug, share |
 | **Coupling** | Standalone + hook-integrated | Use anywhere, auto-cached in hooks |
 | **Existing Transcript** | Replace it (breaking change) | Cleaner than parallel types |
@@ -403,6 +405,8 @@ Turn (requestId: "req_011CWj6D8KFP8hnwYdrq7S4C")
 ---
 
 ## Python API
+
+> **Note**: The spec examples below use dataclass syntax for clarity. The actual implementation uses **Pydantic BaseModel** with field aliases for camelCase→snake_case conversion. See `src/fasthooks/transcript/` for the real code.
 
 ### Core Classes
 
@@ -1410,14 +1414,24 @@ The `message.usage` field in AssistantMessage contains detailed token metrics:
 
 1. [x] Examine real transcript files to validate model
 2. [x] Interview stakeholder on design decisions
-3. [ ] Implement Entry parsing (JSONL → dataclasses)
+3. [x] Implement Entry parsing (JSONL → Pydantic models)
 4. [ ] Implement proxy pattern for _raw sync
-5. [ ] Implement relationship indexing
+5. [x] Implement relationship indexing (tool_use, tool_result, uuid, request_id, snapshot)
 6. [ ] Implement CRUD with chain management
-7. [ ] Implement Turn grouping
+7. [x] Implement Turn grouping (by requestId)
 8. [ ] Implement TranscriptView query interface
 9. [ ] Implement factories and presets
 10. [ ] Implement export formats
-11. [ ] Add to fasthooks DI system
-12. [ ] Write tests
+11. [ ] Add to fasthooks DI system (replace depends.Transcript)
+12. [x] Write tests (41 tests)
 13. [ ] Write documentation/cookbook
+
+### Implementation Notes (v1)
+
+- **Pydantic over dataclasses**: All models use Pydantic BaseModel for validation, field aliases (camelCase→snake_case), and `extra="allow"` to preserve unknown fields
+- **`include_archived` setting**: Transcript has instance-level `include_archived=False` default; views respect this, methods accept override param
+- **`include_meta` setting**: Filters out `isMeta=True` and `isVisibleInTranscriptOnly=True` entries by default
+- **`tool_results` property**: Added to UserMessage for type-safe access (returns `list[ToolResultBlock]`)
+- **`get_logical_parent()`**: For CompactBoundary, returns entry via `logicalParentUuid` (preserves chain across compaction)
+- **`find_snapshot()`**: Finds FileHistorySnapshot by message_id
+- **Turn forward reference**: Uses `list[Any]` to avoid Pydantic forward reference issues with AssistantMessage
