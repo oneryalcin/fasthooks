@@ -1419,11 +1419,11 @@ The `message.usage` field in AssistantMessage contains detailed token metrics:
 5. [x] Implement relationship indexing (tool_use, tool_result, uuid, request_id, snapshot)
 6. [x] Implement CRUD with chain management (remove, remove_tree, insert, append, replace, save)
 7. [x] Implement Turn grouping (by requestId)
-8. [ ] Implement TranscriptView query interface
+8. [x] Implement TranscriptQuery fluent API
 9. [ ] Implement factories and presets
 10. [ ] Implement export formats
 11. [x] Add to fasthooks DI system (replace depends.Transcript)
-12. [x] Write tests (90+ tests)
+12. [x] Write tests (115+ tests)
 13. [ ] Write documentation/cookbook
 
 ### Implementation Notes (v1)
@@ -1444,3 +1444,12 @@ The `message.usage` field in AssistantMessage contains detailed token metrics:
 - **turns filtering**: `get_turns(include_archived=...)` filters entries by UUID membership to respect include_archived setting
 - **UnknownBlock**: Forward-compatible fallback for unrecognized content block types; preserves original type string and all data
 - **validate setting**: Flows from Transcript to `parse_content_block()` - "strict" raises, "warn" logs warning (default), "none" silent
+- **TranscriptQuery**: Fluent query API inspired by Django ORM and Tidyverse. Immutable chaining, lazy evaluation on terminals. Supports:
+  - Type shortcuts: `.users()`, `.assistants()`, `.system()`, `.with_tools()`, `.with_errors()`, `.with_thinking()`
+  - Filtering: `.filter(field=val)`, `.where(lambda)`, `.exclude()`
+  - Lookups: `exact`, `contains`, `startswith`, `endswith`, `regex`, `in`, `gt/gte/lt/lte`, `isnull`
+  - Time: `.since(ts)`, `.until(ts)`
+  - Ordering: `.order_by("field")`, `.order_by("-field")` for descending
+  - Pagination: `.limit(n)`, `.offset(n)`
+  - Terminals: `.all()`, `.first()`, `.last()`, `.one()`, `.count()`, `.exists()`
+  - Iteration: `for e in query`, `len(query)`, `bool(query)`
