@@ -45,6 +45,22 @@ Background task system for async operations in hooks.
 
 ## Dependencies
 
+::: fasthooks.tasks.depends.Tasks
+    options:
+      members:
+        - __init__
+        - add
+        - cancel
+        - cancel_all
+        - get
+        - pop
+        - pop_all
+        - pop_errors
+        - has
+        - wait
+        - wait_all
+        - wait_any
+
 ::: fasthooks.tasks.depends.BackgroundTasks
     options:
       members:

@@ -234,7 +234,7 @@ Spawn async work that completes independently and feeds back results in subseque
 
 ```python
 from fasthooks import HookApp, allow
-from fasthooks.tasks import task, BackgroundTasks, PendingResults
+from fasthooks.tasks import task, Tasks
 
 @task
 def analyze_code(code: str) -> str:
@@ -244,15 +244,15 @@ def analyze_code(code: str) -> str:
 app = HookApp()
 
 @app.pre_tool("Write")
-def on_write(event, tasks: BackgroundTasks):
-    # Spawn background task
-    tasks.add(analyze_code, event.content, key="analysis")
+def on_write(event, tasks: Tasks):
+    # Spawn task (key defaults to function name)
+    tasks.add(analyze_code, event.content)
     return allow()
 
 @app.on_prompt()
-def check_results(event, pending: PendingResults):
-    # Check for completed results
-    if result := pending.pop("analysis"):
+def check_results(event, tasks: Tasks):
+    # Pop by function reference (no string typos)
+    if result := tasks.pop(analyze_code):
         return allow(message=f"Previous analysis: {result}")
     return allow()
 ```
@@ -263,15 +263,15 @@ Use Claude Agent SDK for AI-powered background tasks (requires `pip install fast
 
 ```python
 from fasthooks.contrib.claude import ClaudeAgent, agent_task
-from fasthooks.tasks import BackgroundTasks
+from fasthooks.tasks import Tasks
 
 @agent_task(model="haiku", system_prompt="You review code for bugs.")
 async def review_code(agent: ClaudeAgent, code: str) -> str:
     return await agent.query(f"Review this code:\n{code}")
 
 @app.pre_tool("Write")
-def on_write(event, tasks: BackgroundTasks):
-    tasks.add(review_code, event.content, key="review")
+def on_write(event, tasks: Tasks):
+    tasks.add(review_code, event.content)
     return allow()
 ```
 

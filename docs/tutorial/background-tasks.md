@@ -11,7 +11,7 @@ Background tasks let you spawn async work that runs independently and feeds back
 
 ```python
 from fasthooks import HookApp, allow
-from fasthooks.tasks import task, BackgroundTasks, PendingResults
+from fasthooks.tasks import task, Tasks
 
 # Define a task
 @task
@@ -25,17 +25,41 @@ app = HookApp()
 
 # Spawn task when code is written
 @app.pre_tool("Write")
-def on_write(event, tasks: BackgroundTasks):
-    tasks.add(analyze_code, event.content, key="analysis")
+def on_write(event, tasks: Tasks):
+    tasks.add(analyze_code, event.content)
     return allow()
 
-# Check for results on next prompt
+# Check for results on next prompt (same dependency)
 @app.on_prompt()
-def check_results(event, pending: PendingResults):
-    if result := pending.pop("analysis"):
+def check_results(event, tasks: Tasks):
+    if result := tasks.pop(analyze_code):
         return allow(message=f"Previous analysis: {result}")
     return allow()
 ```
+
+## How It Works
+
+All task operations are **non-blocking**:
+
+| Method | Behavior |
+|--------|----------|
+| `tasks.add()` | Submits to thread pool, returns immediately |
+| `tasks.pop()` | Dict lookup, returns result or `None` instantly |
+| `tasks.get()` | Dict lookup, returns `TaskResult` or `None` instantly |
+| `tasks.has()` | Dict lookup, returns `bool` instantly |
+| `await tasks.wait()` | Async polling, yields while waiting |
+
+The pattern is fire-and-forget:
+
+```
+Hook 1: tasks.add(my_task, args)  →  queues work  →  returns instantly
+        ↓
+        ThreadPoolExecutor runs task in background
+        ↓
+Hook 2: tasks.pop(my_task)  →  checks dict  →  returns result (or None if still running)
+```
+
+This design ensures hooks never block on IO-bound work like API calls or database queries.
 
 ## Core Concepts
 
@@ -69,65 +93,45 @@ def long_output_task() -> str:
 | `priority` | 0 | Higher priority tasks may be scheduled first |
 | `transform` | None | Function to transform the result |
 
-### BackgroundTasks
+### Tasks (recommended)
 
-Inject `BackgroundTasks` to spawn tasks:
+Inject `Tasks` to spawn tasks and retrieve results:
 
 ```python
-from fasthooks.tasks import BackgroundTasks
+from fasthooks.tasks import Tasks
 
 @app.pre_tool("Write")
-def on_write(event, tasks: BackgroundTasks):
-    # Add a task
-    tasks.add(my_task, arg1, arg2, key="unique-key")
+def on_write(event, tasks: Tasks):
+    # Add a task (default key = function name)
+    tasks.add(my_task, arg1, arg2)
 
     # Add with custom TTL
-    tasks.add(other_task, data, key="other", ttl=600)
+    tasks.add(other_task, data, ttl=600)
 
     return allow()
 ```
 
-**Methods:**
-
-| Method | Description |
-|--------|-------------|
-| `add(func, *args, key, ttl=300, **kwargs)` | Enqueue a task |
-| `cancel(key)` | Cancel a pending/running task |
-| `cancel_all()` | Cancel all tasks for this session |
-
-### PendingResults
-
-Inject `PendingResults` to retrieve completed results:
+For multiple concurrent calls to the same function, provide an explicit `key`:
 
 ```python
-from fasthooks.tasks import PendingResults
-
-@app.on_prompt()
-def check_results(event, pending: PendingResults):
-    # Pop a specific result (removes from storage)
-    if result := pending.pop("analysis"):
-        return allow(message=f"Result: {result}")
-
-    # Pop all completed results
-    for result in pending.pop_all():
-        print(f"Got: {result}")
-
-    # Check without removing
-    if pending.has("analysis"):
-        result = pending.get("analysis")
-
-    return allow()
+tasks.add(fetch, "https://example.com/a", key="fetch:a")
+tasks.add(fetch, "https://example.com/b", key="fetch:b")
 ```
 
 **Methods:**
 
 | Method | Description |
 |--------|-------------|
-| `pop(key)` | Pop completed result, returns None if not ready |
+| `add(func, *args, key=None, ttl=300, **kwargs)` | Enqueue a task |
+| `cancel(key)` | Cancel a pending/running task |
+| `cancel_all()` | Cancel all tasks for this session |
+| `get(key)` | Get TaskResult without removing |
+| `pop(key)` | Pop completed result value |
 | `pop_all()` | Pop all completed results |
 | `pop_errors()` | Pop failed tasks as `[(key, exception), ...]` |
-| `get(key)` | Get TaskResult without removing |
 | `has(key=None)` | Check if results are ready |
+
+`BackgroundTasks` and `PendingResults` are still available for a split enqueue/results model, but `Tasks` is the recommended DX.
 
 ### Async Waiting
 
@@ -135,15 +139,17 @@ For handlers that need to wait for results:
 
 ```python
 @app.on_stop()
-async def wait_for_results(event, pending: PendingResults):
+async def wait_for_results(event, tasks: Tasks):
     # Wait for specific task (with timeout)
-    result = await pending.wait("analysis", timeout=10.0)
+    result = await tasks.wait("analysis", timeout=10.0)
 
     # Wait for multiple tasks
-    results = await pending.wait_all(["task1", "task2"], timeout=30.0)
+    results = await tasks.wait_all(["task1", "task2"], timeout=30.0)
 
     # Wait for any task to complete
-    key, result = await pending.wait_any(["task1", "task2"])
+    completed = await tasks.wait_any(["task1", "task2"])
+    if completed:
+        key, result = completed
 
     return allow()
 ```
@@ -188,7 +194,7 @@ Create background tasks that use Claude:
 
 ```python
 from fasthooks.contrib.claude import ClaudeAgent, agent_task
-from fasthooks.tasks import BackgroundTasks
+from fasthooks.tasks import Tasks
 
 @agent_task(model="haiku", system_prompt="You review code for security issues.")
 async def security_review(agent: ClaudeAgent, code: str) -> str:
@@ -199,8 +205,8 @@ async def codebase_search(agent: ClaudeAgent, query: str) -> str:
     return await agent.query(f"Search the codebase for: {query}")
 
 @app.pre_tool("Write")
-def on_write(event, tasks: BackgroundTasks):
-    tasks.add(security_review, event.content, key="security")
+def on_write(event, tasks: Tasks):
+    tasks.add(security_review, event.content)
     return allow()
 ```
 
@@ -225,14 +231,14 @@ async def review_code(agent: ClaudeAgent, code: str, file_path: str) -> str:
     return await agent.query(f"Review {file_path}:\n```\n{code}\n```")
 
 @app.pre_tool("Write")
-def on_write(event, tasks: BackgroundTasks):
+def on_write(event, tasks: Tasks):
     if event.file_path.endswith(".py"):
-        tasks.add(review_code, event.content, event.file_path, key="review")
+        tasks.add(review_code, event.content, event.file_path)
     return allow()
 
 @app.on_prompt()
-def show_review(event, pending: PendingResults):
-    if review := pending.pop("review"):
+def show_review(event, tasks: Tasks):
+    if review := tasks.pop(review_code):
         return allow(message=f"Code review:\n{review}")
     return allow()
 ```
@@ -247,13 +253,13 @@ def search_memory(query: str, session_id: str) -> str:
     return "\n".join(r.text for r in results[:3])
 
 @app.on_prompt()
-def enrich_prompt(event, tasks: BackgroundTasks, pending: PendingResults):
+def enrich_prompt(event, tasks: Tasks):
     # Check for previous search results
-    if context := pending.pop("memory"):
+    if context := tasks.pop(search_memory):
         return allow(message=f"Relevant context:\n{context}")
 
     # Start new search based on prompt
-    tasks.add(search_memory, event.prompt, event.session_id, key="memory")
+    tasks.add(search_memory, event.prompt, event.session_id)
     return allow()
 ```
 
@@ -268,7 +274,7 @@ def fetch_documentation(url: str) -> str:
     return response.text[:5000]
 
 @app.pre_tool("WebFetch")
-def prefetch_docs(event, tasks: BackgroundTasks):
+def prefetch_docs(event, tasks: Tasks):
     # Start fetching in background
     tasks.add(fetch_documentation, event.url, key=f"doc:{event.url}")
     return allow()
@@ -279,7 +285,7 @@ def prefetch_docs(event, tasks: BackgroundTasks):
 Use `ImmediateBackend` for synchronous testing:
 
 ```python
-from fasthooks.tasks import task, BackgroundTasks, PendingResults
+from fasthooks.tasks import task, Tasks
 from fasthooks.tasks.testing import ImmediateBackend
 
 @task
@@ -289,13 +295,9 @@ def double(x: int) -> int:
 def test_background_task():
     backend = ImmediateBackend()
 
-    # Enqueue task
-    tasks = BackgroundTasks(backend, session_id="test")
-    tasks.add(double, 5, key="result")
-
-    # Result is immediately available (no threading)
-    pending = PendingResults(backend, session_id="test")
-    assert pending.pop("result") == 10
+    tasks = Tasks(backend, session_id="test")
+    tasks.add(double, 5)
+    assert tasks.pop(double) == 10
 ```
 
 ## Error Handling
@@ -308,9 +310,9 @@ def risky_task() -> str:
     raise ValueError("Something went wrong")
 
 @app.on_prompt()
-def check_errors(event, pending: PendingResults):
+def check_errors(event, tasks: Tasks):
     # Pop all failed tasks
-    for key, error in pending.pop_errors():
+    for key, error in tasks.pop_errors():
         print(f"Task {key} failed: {error}")
     return allow()
 ```
@@ -323,8 +325,8 @@ Check detailed task status via `TaskResult`:
 from fasthooks.tasks import TaskStatus
 
 @app.on_prompt()
-def check_status(event, pending: PendingResults):
-    result = pending.get("my-task")
+def check_status(event, tasks: Tasks):
+    result = tasks.get("my-task")
     if result:
         if result.status == TaskStatus.COMPLETED:
             print(f"Done: {result.value}")

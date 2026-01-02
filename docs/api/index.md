@@ -25,7 +25,7 @@ from fasthooks import allow, deny, block
 from fasthooks.depends import Transcript, State
 
 # Background Tasks
-from fasthooks.tasks import task, BackgroundTasks, PendingResults
+from fasthooks.tasks import task, Tasks
 
 # Claude Integration (optional)
 from fasthooks.contrib.claude import ClaudeAgent, agent_task

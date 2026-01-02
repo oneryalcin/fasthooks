@@ -131,7 +131,7 @@ assert response.decision == "deny"
 
 ```python
 from fasthooks.depends import State, Transcript
-from fasthooks.tasks import BackgroundTasks, PendingResults
+from fasthooks.tasks import Tasks
 
 @app.pre_tool("Bash")
 def handler(event, state: State, transcript: Transcript):
@@ -143,9 +143,8 @@ def handler(event, state: State, transcript: Transcript):
     print(f"Tokens: {stats.total_tokens}")
 
 @app.pre_tool("Write")
-def with_tasks(event, tasks: BackgroundTasks, pending: PendingResults):
-    # tasks: spawn background work
-    # pending: retrieve completed results
+def with_tasks(event, tasks: Tasks):
+    # tasks: spawn background work + retrieve completed results
     pass
 ```
 
@@ -167,6 +166,21 @@ def with_options(query: str) -> str:
 @task(transform=lambda r: r[:100])
 def with_transform() -> str:
     return long_string()
+```
+
+### Tasks (recommended)
+
+```python
+from fasthooks.tasks import Tasks
+
+@app.pre_tool("Write")
+def handler(event, tasks: Tasks):
+    # Default key is the function name; use explicit key for concurrent calls
+    tasks.add(my_task, arg1)
+    tasks.add(other_task, data, key="other:1")
+
+    # Pop by function reference (no string typos)
+    result = tasks.pop(my_task)
 ```
 
 ### BackgroundTasks
@@ -264,10 +278,10 @@ from fasthooks.contrib.claude import ClaudeAgent, agent_task
 async def review_code(agent: ClaudeAgent, code: str) -> str:
     return await agent.query(f"Review:\n{code}")
 
-# Use with BackgroundTasks
+# Use with Tasks
 @app.pre_tool("Write")
-def on_write(event, tasks: BackgroundTasks):
-    tasks.add(review_code, event.content, key="review")
+def on_write(event, tasks: Tasks):
+    tasks.add(review_code, event.content)
 ```
 
 ## Blueprint

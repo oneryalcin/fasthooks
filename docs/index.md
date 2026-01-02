@@ -33,6 +33,8 @@ if __name__ == "__main__":
 - **Typed events** - Autocomplete for `event.command`, `event.file_path`, etc.
 - **Decorators** - `@app.pre_tool("Bash")`, `@app.on_stop()`, `@app.on_session_start()`
 - **Dependency injection** - `def handler(event, transcript: Transcript, state: State)`
+- **Background tasks** - Spawn async work that feeds back in subsequent hooks
+- **Claude sub-agents** - Use Claude Agent SDK for AI-powered background tasks
 - **Blueprints** - Compose handlers from multiple modules
 - **Middleware** - Cross-cutting concerns like timing and logging
 - **Guards** - `@app.pre_tool("Bash", when=lambda e: "sudo" in e.command)`

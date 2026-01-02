@@ -40,7 +40,7 @@ from fasthooks.logging import EventLogger
 from fasthooks.registry import HandlerEntry, HandlerRegistry
 from fasthooks.responses import BaseHookResponse
 from fasthooks.tasks.backend import BaseBackend, InMemoryBackend
-from fasthooks.tasks.depends import BackgroundTasks, PendingResults
+from fasthooks.tasks.depends import BackgroundTasks, PendingResults, Tasks
 
 # Map tool names to typed event classes
 TOOL_EVENT_MAP: dict[str, type[ToolEvent]] = {
@@ -402,6 +402,11 @@ class HookApp(HandlerRegistry):
                     deps[param_name] = NullState()
             elif hint is BackgroundTasks:
                 deps[param_name] = BackgroundTasks(
+                    self.task_backend,
+                    event.session_id,
+                )
+            elif hint is Tasks:
+                deps[param_name] = Tasks(
                     self.task_backend,
                     event.session_id,
                 )

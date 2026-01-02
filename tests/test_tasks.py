@@ -10,6 +10,7 @@ from fasthooks.tasks import (
     ImmediateBackend,
     InMemoryBackend,
     PendingResults,
+    Tasks,
     Task,
     TaskResult,
     TaskStatus,
@@ -595,6 +596,56 @@ def test_background_tasks_and_pending_results_together():
     assert results_retrieved == [21]  # But result was retrieved
 
 
+def test_tasks_di():
+    """Test unified Tasks dependency injection."""
+    backend = ImmediateBackend()
+    app = HookApp(task_backend=backend)
+
+    @task
+    def process(x: int) -> int:
+        return x * 2
+
+    @app.pre_tool("Bash")
+    def handler(event, tasks: Tasks):
+        tasks.add(process, 5)
+        return allow()
+
+    client = TestClient(app)
+    client.send(MockEvent.bash(command="ls"))
+
+    assert backend.has("test-session", "process")
+    assert backend.pop("test-session", "process") == 10
+
+
+def test_tasks_default_key_and_pop_by_task():
+    """Test Tasks defaults key to func name and supports pop/get by Task reference."""
+    backend = ImmediateBackend()
+    tasks = Tasks(backend, "s1")
+
+    @task
+    def double(x: int) -> int:
+        return x * 2
+
+    tasks.add(double, 5)
+
+    assert tasks.get(double) is not None
+    assert tasks.get("double") is not None
+    assert tasks.pop(double) == 10
+
+
+def test_tasks_default_key_and_pop_by_function():
+    """Test Tasks supports plain callables (without @task)."""
+    backend = ImmediateBackend()
+    tasks = Tasks(backend, "s1")
+
+    def inc(x: int) -> int:
+        return x + 1
+
+    tasks.add(inc, 41)
+
+    assert tasks.pop(inc) == 42
+
+
 def test_default_task_backend():
     """Test HookApp creates default InMemoryBackend."""
     app = HookApp()
@@ -633,6 +684,22 @@ async def test_immediate_backend_wait():
 
     result = await backend.wait("s1", "answer", timeout=1.0)
     assert result == 42
+
+
+@pytest.mark.asyncio
+async def test_tasks_wait_accepts_task():
+    """Test Tasks.wait can be called with a Task reference (no string keys)."""
+    backend = ImmediateBackend()
+    tasks = Tasks(backend, "s1")
+
+    @task
+    def echo(x: int) -> int:
+        return x
+
+    tasks.add(echo, 99)
+
+    result = await tasks.wait(echo, timeout=1.0)
+    assert result == 99
 
 
 @pytest.mark.asyncio
