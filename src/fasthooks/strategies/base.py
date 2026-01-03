@@ -204,13 +204,14 @@ class Strategy(ABC):
 
                 # Emit decision if result returned
                 if result is not None:
+                    decision = getattr(result, "decision", "approve")
                     self._emit(
                         DecisionEvent(
                             session_id=self._current_session_id,
                             request_id=self._current_request_id,
                             strategy_name=self.Meta.name,
                             hook_name=hook_name,
-                            decision=result.decision,
+                            decision=decision,
                             reason=getattr(result, "reason", None),
                             message=getattr(result, "message", None),
                         )
