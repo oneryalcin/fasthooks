@@ -1420,7 +1420,7 @@ The `message.usage` field in AssistantMessage contains detailed token metrics:
 6. [x] Implement CRUD with chain management (remove, remove_tree, insert, append, replace, save)
 7. [x] Implement Turn grouping (by requestId)
 8. [x] Implement TranscriptQuery fluent API
-9. [ ] Implement factories and presets
+9. [x] Implement factories (create() + inject_tool_result)
 10. [ ] Implement export formats
 11. [x] Add to fasthooks DI system (replace depends.Transcript)
 12. [x] Write tests (115+ tests)
@@ -1453,3 +1453,8 @@ The `message.usage` field in AssistantMessage contains detailed token metrics:
   - Pagination: `.limit(n)`, `.offset(n)`
   - Terminals: `.all()`, `.first()`, `.last()`, `.one()`, `.count()`, `.exists()`
   - Iteration: `for e in query`, `len(query)`, `bool(query)`
+- **Factories**: Ruthlessly minimal - only what adds real value:
+  - `UserMessage.create(content, parent=, context=, **overrides)` - generates uuid, timestamp, copies metadata, marks `is_synthetic=True`
+  - `AssistantMessage.create(content, parent=, context=, model="synthetic", **overrides)` - same + generates request_id, message_id
+  - `inject_tool_result(transcript, tool_name, tool_input, result, is_error=, position=)` - creates matching ToolUseBlock + ToolResultBlock pair with correct ID wiring
+  - Skipped: `inject_reminder`, `inject_exchange`, `summarize_tool_result` - too thin, 2 lines with create() + insert()

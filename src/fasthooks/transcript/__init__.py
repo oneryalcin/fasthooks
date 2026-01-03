@@ -21,6 +21,7 @@ from fasthooks.transcript.entries import (
     UserMessage,
     parse_entry,
 )
+from fasthooks.transcript.factories import inject_tool_result
 from fasthooks.transcript.turn import Turn
 
 __all__ = [
@@ -47,4 +48,6 @@ __all__ = [
     "FileHistorySnapshot",
     "TranscriptEntry",
     "parse_entry",
+    # Factories
+    "inject_tool_result",
 ]

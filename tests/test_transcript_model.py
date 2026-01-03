@@ -1419,3 +1419,239 @@ class TestTranscriptQuery:
         # Setting on transcript instance
         t.include_meta = True
         assert t.query().users().count() == 3
+
+
+class TestFactories:
+    """Test factory methods for creating entries."""
+
+    def test_user_message_create_basic(self):
+        """UserMessage.create() should generate uuid, timestamp, and mark synthetic."""
+        msg = UserMessage.create("Hello world")
+        assert msg.text == "Hello world"
+        assert msg.uuid  # Generated
+        assert msg.timestamp is not None
+        assert msg.is_synthetic is True
+        assert msg.type == "user"
+
+    def test_user_message_create_with_parent(self):
+        """UserMessage.create() should set parent_uuid from parent."""
+        parent = UserMessage.create("Parent message")
+        child = UserMessage.create("Child message", parent=parent)
+        assert child.parent_uuid == parent.uuid
+
+    def test_user_message_create_with_context(self):
+        """UserMessage.create() should copy metadata from context."""
+        ctx = UserMessage.create("Context", cwd="/test", session_id="sess-123")
+        msg = UserMessage.create("New message", context=ctx)
+        assert msg.cwd == "/test"
+        assert msg.session_id == "sess-123"
+
+    def test_user_message_create_overrides(self):
+        """UserMessage.create() should allow field overrides."""
+        ctx = UserMessage.create("Context", cwd="/original")
+        msg = UserMessage.create("New", context=ctx, cwd="/override")
+        assert msg.cwd == "/override"
+
+    def test_user_message_create_serialization(self):
+        """Created UserMessage should serialize correctly."""
+        msg = UserMessage.create("Test content")
+        data = msg.to_dict()
+        assert data["message"]["role"] == "user"
+        assert data["message"]["content"] == "Test content"
+        assert data["isSynthetic"] is True
+
+    def test_assistant_message_create_basic(self):
+        """AssistantMessage.create() should generate all required fields."""
+        msg = AssistantMessage.create("Hello from Claude")
+        assert msg.text == "Hello from Claude"
+        assert msg.uuid  # Generated
+        assert msg.timestamp is not None
+        assert msg.is_synthetic is True
+        assert msg.model == "synthetic"
+        assert msg.stop_reason == "end_turn"
+        assert msg.request_id.startswith("req_")
+        assert msg.message_id.startswith("msg_")
+
+    def test_assistant_message_create_with_content_blocks(self):
+        """AssistantMessage.create() should accept ContentBlock list."""
+        blocks = [
+            TextBlock(text="I'll run a command"),
+            ToolUseBlock(id="toolu_123", name="Bash", input={"command": "ls"}),
+        ]
+        msg = AssistantMessage.create(blocks)
+        assert len(msg.content) == 2
+        assert msg.text == "I'll run a command"
+        assert msg.has_tool_use is True
+        assert msg.tool_uses[0].name == "Bash"
+
+    def test_assistant_message_create_with_parent(self):
+        """AssistantMessage.create() should set parent_uuid from parent."""
+        parent = UserMessage.create("Question")
+        response = AssistantMessage.create("Answer", parent=parent)
+        assert response.parent_uuid == parent.uuid
+
+    def test_assistant_message_create_custom_model(self):
+        """AssistantMessage.create() should allow custom model name."""
+        msg = AssistantMessage.create("Test", model="claude-3-opus")
+        assert msg.model == "claude-3-opus"
+
+    def test_assistant_message_create_serialization(self):
+        """Created AssistantMessage should serialize correctly."""
+        msg = AssistantMessage.create("Test response")
+        data = msg.to_dict()
+        assert data["message"]["role"] == "assistant"
+        assert data["message"]["content"][0]["type"] == "text"
+        assert data["message"]["content"][0]["text"] == "Test response"
+        assert data["message"]["model"] == "synthetic"
+        assert data["isSynthetic"] is True
+
+
+class TestInjectToolResult:
+    """Test inject_tool_result factory function."""
+
+    def test_inject_tool_result_basic(self, tmp_path):
+        """inject_tool_result should create matching tool use + result pair."""
+        import json
+
+        from fasthooks.transcript import inject_tool_result
+
+        path = tmp_path / "transcript.jsonl"
+        path.write_text(
+            json.dumps({
+                "type": "user",
+                "uuid": "u1",
+                "sessionId": "sess-1",
+                "cwd": "/test",
+                "message": {"role": "user", "content": "Run ls"},
+            })
+            + "\n"
+        )
+
+        t = Transcript(path)
+        assert len(t.entries) == 1
+
+        assistant, user = inject_tool_result(
+            t, "Bash", {"command": "ls -la"}, "file1.txt\nfile2.txt"
+        )
+
+        assert len(t.entries) == 3
+
+        # Check assistant message
+        assert assistant.type == "assistant"
+        assert len(assistant.tool_uses) == 1
+        assert assistant.tool_uses[0].name == "Bash"
+        assert assistant.tool_uses[0].input == {"command": "ls -la"}
+
+        # Check user message (tool result)
+        assert user.type == "user"
+        assert user.is_tool_result is True
+        assert len(user.tool_results) == 1
+        assert user.tool_results[0].content == "file1.txt\nfile2.txt"
+        assert user.tool_results[0].is_error is False
+
+        # Check IDs match
+        assert user.tool_results[0].tool_use_id == assistant.tool_uses[0].id
+
+        # Check chain
+        assert assistant.parent_uuid == "u1"
+        assert user.parent_uuid == assistant.uuid
+
+    def test_inject_tool_result_with_error(self, tmp_path):
+        """inject_tool_result should support is_error flag."""
+        import json
+
+        from fasthooks.transcript import inject_tool_result
+
+        path = tmp_path / "transcript.jsonl"
+        path.write_text(
+            json.dumps({
+                "type": "user",
+                "uuid": "u1",
+                "message": {"role": "user", "content": "Run bad command"},
+            })
+            + "\n"
+        )
+
+        t = Transcript(path)
+        assistant, user = inject_tool_result(
+            t, "Bash", {"command": "bad-cmd"}, "command not found", is_error=True
+        )
+
+        assert user.tool_results[0].is_error is True
+
+    def test_inject_tool_result_at_start(self, tmp_path):
+        """inject_tool_result should support position='start'."""
+        import json
+
+        from fasthooks.transcript import inject_tool_result
+
+        path = tmp_path / "transcript.jsonl"
+        entries = [
+            {"type": "user", "uuid": "u1", "message": {"role": "user", "content": "msg1"}},
+            {"type": "user", "uuid": "u2", "parentUuid": "u1", "message": {"role": "user", "content": "msg2"}},
+        ]
+        with open(path, "w") as f:
+            for e in entries:
+                f.write(json.dumps(e) + "\n")
+
+        t = Transcript(path)
+        assistant, user = inject_tool_result(
+            t, "Read", {"file_path": "/config.json"}, "{}", position="start"
+        )
+
+        # Should be at the beginning
+        assert t.entries[0] == assistant
+        assert t.entries[1] == user
+        assert t.entries[2].uuid == "u1"
+
+    def test_inject_tool_result_synthetic_marker(self, tmp_path):
+        """Injected entries should be marked as synthetic."""
+        import json
+
+        from fasthooks.transcript import inject_tool_result
+
+        path = tmp_path / "transcript.jsonl"
+        path.write_text(
+            json.dumps({
+                "type": "user",
+                "uuid": "u1",
+                "message": {"role": "user", "content": "test"},
+            })
+            + "\n"
+        )
+
+        t = Transcript(path)
+        assistant, user = inject_tool_result(t, "Bash", {"command": "echo"}, "output")
+
+        assert assistant.is_synthetic is True
+        assert user.is_synthetic is True
+
+    def test_inject_tool_result_copies_metadata(self, tmp_path):
+        """inject_tool_result should copy metadata from context entry."""
+        import json
+
+        from fasthooks.transcript import inject_tool_result
+
+        path = tmp_path / "transcript.jsonl"
+        path.write_text(
+            json.dumps({
+                "type": "user",
+                "uuid": "u1",
+                "sessionId": "session-xyz",
+                "cwd": "/workspace",
+                "version": "2.0.76",
+                "gitBranch": "main",
+                "slug": "test-slug",
+                "message": {"role": "user", "content": "test"},
+            })
+            + "\n"
+        )
+
+        t = Transcript(path)
+        assistant, user = inject_tool_result(t, "Bash", {"command": "ls"}, "out")
+
+        assert assistant.session_id == "session-xyz"
+        assert assistant.cwd == "/workspace"
+        assert assistant.version == "2.0.76"
+        assert assistant.git_branch == "main"
+        assert assistant.slug == "test-slug"

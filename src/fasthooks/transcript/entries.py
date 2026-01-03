@@ -1,8 +1,10 @@
 """Transcript entry types."""
 from __future__ import annotations
 
-from datetime import datetime
+import secrets
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Literal
+from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -48,8 +50,9 @@ class Entry(BaseModel):
         """Serialize entry to dict for JSONL output.
 
         Uses camelCase aliases and excludes internal fields.
+        mode='json' ensures datetime is serialized to ISO8601 string.
         """
-        data = self.model_dump(by_alias=True, exclude_none=True)
+        data = self.model_dump(by_alias=True, exclude_none=True, mode="json")
         # Remove internal fields
         data.pop("_line_number", None)
         return data
@@ -101,6 +104,65 @@ class UserMessage(Entry):
         if isinstance(self._content, str):
             return self._content
         return ""
+
+    @classmethod
+    def create(
+        cls,
+        content: str,
+        *,
+        parent: Entry | None = None,
+        context: Entry | None = None,
+        cwd: str | None = None,
+        session_id: str | None = None,
+        **overrides: Any,
+    ) -> UserMessage:
+        """Create a valid UserMessage with proper UUID/timestamp.
+
+        Args:
+            content: Message text
+            parent: Entry this should follow (sets parent_uuid)
+            context: Entry to copy metadata from (cwd, session_id, etc.)
+            cwd: Override working directory
+            session_id: Override session ID
+            **overrides: Any other field overrides
+
+        Returns:
+            New UserMessage marked as synthetic
+        """
+        # Use context for metadata, fallback to parent, then defaults
+        ctx = context or parent
+
+        data: dict[str, Any] = {
+            "uuid": str(uuid4()),
+            "timestamp": datetime.now(timezone.utc),
+            "is_synthetic": True,
+            "user_type": "external",
+        }
+
+        # Copy metadata from context (only if it's an Entry with these fields)
+        if ctx and isinstance(ctx, Entry):
+            data["session_id"] = ctx.session_id
+            data["cwd"] = ctx.cwd
+            data["version"] = ctx.version
+            data["git_branch"] = ctx.git_branch
+            data["slug"] = ctx.slug
+            data["is_sidechain"] = ctx.is_sidechain
+
+        # Set parent_uuid
+        if parent:
+            data["parent_uuid"] = parent.uuid
+
+        # Apply explicit overrides
+        if cwd is not None:
+            data["cwd"] = cwd
+        if session_id is not None:
+            data["session_id"] = session_id
+        data.update(overrides)
+
+        # Create instance and set content
+        instance = cls.model_validate(data)
+        object.__setattr__(instance, "_content", content)
+        return instance
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to dict, reconstructing message structure from parsed content."""
@@ -221,6 +283,80 @@ class AssistantMessage(Entry):
         """Whether this message contains tool use."""
         return any(isinstance(b, ToolUseBlock) for b in self._content)
 
+    @classmethod
+    def create(
+        cls,
+        content: str | list[ContentBlock],
+        *,
+        parent: Entry | None = None,
+        context: Entry | None = None,
+        model: str = "synthetic",
+        stop_reason: str = "end_turn",
+        cwd: str | None = None,
+        session_id: str | None = None,
+        **overrides: Any,
+    ) -> AssistantMessage:
+        """Create a valid AssistantMessage with proper UUID/timestamp.
+
+        Args:
+            content: Text string (becomes TextBlock) or list of ContentBlocks
+            parent: Entry this should follow (sets parent_uuid)
+            context: Entry to copy metadata from (cwd, session_id, etc.)
+            model: Model name (default "synthetic")
+            stop_reason: Stop reason (default "end_turn")
+            cwd: Override working directory
+            session_id: Override session ID
+            **overrides: Any other field overrides
+
+        Returns:
+            New AssistantMessage marked as synthetic
+        """
+        # Use context for metadata, fallback to parent, then defaults
+        ctx = context or parent
+
+        data: dict[str, Any] = {
+            "uuid": str(uuid4()),
+            "timestamp": datetime.now(timezone.utc),
+            "request_id": f"req_{secrets.token_hex(12)}",
+            "is_synthetic": True,
+            "user_type": "external",
+        }
+
+        # Copy metadata from context (only if it's an Entry with these fields)
+        if ctx and isinstance(ctx, Entry):
+            data["session_id"] = ctx.session_id
+            data["cwd"] = ctx.cwd
+            data["version"] = ctx.version
+            data["git_branch"] = ctx.git_branch
+            data["slug"] = ctx.slug
+            data["is_sidechain"] = ctx.is_sidechain
+
+        # Set parent_uuid
+        if parent:
+            data["parent_uuid"] = parent.uuid
+
+        # Apply explicit overrides
+        if cwd is not None:
+            data["cwd"] = cwd
+        if session_id is not None:
+            data["session_id"] = session_id
+        data.update(overrides)
+
+        # Parse content
+        if isinstance(content, str):
+            blocks: list[ContentBlock] = [TextBlock(text=content)]
+        else:
+            blocks = content
+
+        # Create instance and set private fields
+        instance = cls.model_validate(data)
+        object.__setattr__(instance, "_message_id", f"msg_{secrets.token_hex(12)}")
+        object.__setattr__(instance, "_model", model)
+        object.__setattr__(instance, "_content", blocks)
+        object.__setattr__(instance, "_stop_reason", stop_reason)
+        object.__setattr__(instance, "_usage", {})
+        return instance
+
     def to_dict(self) -> dict[str, Any]:
         """Serialize to dict, reconstructing message structure from parsed content."""
         data = super().to_dict()
@@ -236,6 +372,7 @@ class AssistantMessage(Entry):
 
         # Reconstruct message object
         message: dict[str, Any] = {
+            "type": "message",
             "role": "assistant",
             "content": content_list,
         }
@@ -323,7 +460,7 @@ class FileHistorySnapshot(BaseModel):
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to dict for JSONL output."""
-        data = self.model_dump(by_alias=True, exclude_none=True)
+        data = self.model_dump(by_alias=True, exclude_none=True, mode="json")
         data.pop("_line_number", None)
         return data
 
