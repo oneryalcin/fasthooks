@@ -1859,3 +1859,125 @@ class TestExports:
 
         with pytest.raises(ValueError, match="Unknown format"):
             t.to_file(tmp_path / "out.txt", format="txt")
+
+class TestCriticalEdgeCases:
+    """Critical tests for data integrity and complex queries."""
+
+    def test_batch_rollback_on_error(self, tmp_path):
+        """Test that transcript state is rolled back if an exception occurs in batch."""
+        f = tmp_path / "transcript.jsonl"
+        f.touch()
+        
+        transcript = Transcript(f)
+        
+        # Setup initial state
+        msg1 = UserMessage.create("Message 1")
+        msg2 = AssistantMessage.create("Message 2")
+        transcript.append(msg1)
+        transcript.append(msg2)
+        transcript.save()
+        
+        initial_count = len(transcript.entries)
+        initial_ids = [e.uuid for e in transcript.entries]
+        
+        # Attempt batch with error
+        with pytest.raises(ValueError, match="Boom"):
+            with transcript.batch():
+                # Make some destructive changes
+                transcript.remove(msg1)
+                transcript.append(UserMessage.create("New Message"))
+                
+                # Verify changes happened in memory
+                assert len(transcript.entries) == initial_count  # removed 1, added 1
+                assert transcript.entries[0].uuid != initial_ids[0] # msg1 removed
+                
+                # Trigger error
+                raise ValueError("Boom")
+                
+        # Verify rollback
+        assert len(transcript.entries) == initial_count
+        assert [e.uuid for e in transcript.entries] == initial_ids
+        assert msg1 in transcript.entries
+        assert msg2 in transcript.entries
+
+    def test_batch_commit_on_success(self, tmp_path):
+        """Test that batch commits and saves on success."""
+        f = tmp_path / "transcript.jsonl"
+        f.touch()
+        
+        transcript = Transcript(f)
+        msg1 = UserMessage.create("Message 1")
+        transcript.append(msg1)
+        transcript.save()
+        
+        with transcript.batch():
+            transcript.append(AssistantMessage.create("Message 2"))
+            
+        # Verify in memory
+        assert len(transcript.entries) == 2
+        
+        # Verify on disk (reload)
+        t2 = Transcript(f)
+        t2.load()
+        assert len(t2.entries) == 2
+
+    def test_query_operators(self):
+        """Test gt, gte, lt, lte, isnull operators."""
+        from datetime import datetime, timedelta, timezone
+        from fasthooks.transcript.query import TranscriptQuery
+        
+        entries = []
+        base_time = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+        
+        # Create entries with different timestamps/values
+        for i in range(5):
+            msg = UserMessage.create(f"msg {i}")
+            msg.timestamp = base_time + timedelta(hours=i)
+            entries.append(msg)
+            
+        # Add one with no timestamp
+        no_ts_msg = UserMessage.create("no ts")
+        no_ts_msg.timestamp = None
+        entries.append(no_ts_msg)
+        
+        q = TranscriptQuery(entries)
+        
+        # gt
+        res = q.filter(timestamp__gt=base_time).all()
+        assert len(res) == 4 # 1, 2, 3, 4
+        
+        # gte
+        res = q.filter(timestamp__gte=base_time).all()
+        assert len(res) == 5 # 0, 1, 2, 3, 4
+        
+        # lt
+        res = q.filter(timestamp__lt=base_time + timedelta(hours=2)).all()
+        assert len(res) == 2 # 0, 1
+        
+        # lte
+        res = q.filter(timestamp__lte=base_time + timedelta(hours=2)).all()
+        assert len(res) == 3 # 0, 1, 2
+        
+        # isnull=True
+        res = q.filter(timestamp__isnull=True).all()
+        assert len(res) == 1
+        assert res[0].text == "no ts"
+        
+        # isnull=False
+        res = q.filter(timestamp__isnull=False).all()
+        assert len(res) == 5
+
+    def test_export_html_basic(self, tmp_path):
+        """Basic test for HTML export."""
+        f = tmp_path / "transcript.jsonl"
+        transcript = Transcript(f, auto_load=False)
+        
+        transcript.append(UserMessage.create("Hello"))
+        transcript.append(AssistantMessage.create("Hi there"))
+        
+        html = transcript.to_html(title="My Test Session")
+        
+        assert "<!DOCTYPE html>" in html
+        assert "My Test Session" in html
+        assert "Hello" in html
+        assert "Hi there" in html
