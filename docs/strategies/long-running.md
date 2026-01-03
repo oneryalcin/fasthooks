@@ -16,12 +16,12 @@ Long-running autonomous agents face a fundamental challenge: they work in discre
 
 ## The Solution: Two-Agent Pattern
 
-The strategy uses different prompts for first vs. subsequent sessions:
+The strategy injects different context for first vs. subsequent sessions:
 
-| Session | Agent Role | What It Does |
-|---------|------------|--------------|
-| First | **Initializer** | Creates `feature_list.json`, `init.sh`, git repo |
-| Subsequent | **Coding** | Works on ONE feature at a time, commits, updates progress |
+| Session | Role | Context Injected |
+|---------|------|------------------|
+| First | **Initializer** | "Create `feature_list.json`, `init.sh`, git repo" |
+| Subsequent | **Coding** | "Read progress, work on ONE feature, commit" |
 
 ```
 Session 1 (Initializer)          Sessions 2+ (Coding)
@@ -34,6 +34,59 @@ Session 1 (Initializer)          Sessions 2+ (Coding)
 │ First commit        │          │ Commit & update     │
 └─────────────────────┘          └─────────────────────┘
 ```
+
+### Understanding "Two Agents"
+
+**Important:** The "two agents" are NOT two separate systems—they're the same Claude with different context injected based on project state. The term "agent" refers to the *role* Claude plays.
+
+## Architecture: Anthropic vs fasthooks
+
+This strategy implements Anthropic's pattern from their [original article](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents), but uses Claude Code hooks instead of a Python script loop.
+
+### Anthropic's Original Approach
+
+```python
+# Python script acts as the outer loop
+while True:
+    client = create_claude_client()  # Fresh context each iteration
+
+    if not feature_list_exists():
+        prompt = INITIALIZER_PROMPT
+    else:
+        prompt = CODING_PROMPT
+
+    await client.query(prompt)
+    # Script manages continuation
+```
+
+### fasthooks Approach (Hooks-Based)
+
+```python
+# Hooks inject context into Claude Code's lifecycle
+@app.on_session_start()
+def on_session_start(event, state):
+    if not feature_list_exists():
+        return context(INITIALIZER_PROMPT)
+    else:
+        return context(CODING_PROMPT)
+
+@app.on_stop()
+def on_stop(event, state):
+    if not clean_state():
+        return block("Commit and update progress first")
+```
+
+### Comparison
+
+| Aspect | Anthropic (Script) | fasthooks (Hooks) |
+|--------|-------------------|-------------------|
+| **Outer loop** | Python `while True` | Claude Code's session lifecycle |
+| **Fresh context** | Script creates new client | Claude Code compaction triggers SessionStart |
+| **Context injection** | Pass prompt to client | Hook returns `context(...)` |
+| **Enforce clean state** | Prompt instructions only | Hook blocks Stop until clean |
+| **Browser testing** | Puppeteer MCP | chrome-devtools MCP (headless) |
+
+**Key advantage of hooks**: The `on_stop` hook can *enforce* clean state by blocking, while Anthropic's script relies on prompt instructions alone.
 
 ## Quick Start
 
