@@ -75,10 +75,7 @@ class Transcript:
 
     def load(self) -> None:
         """Load entries from JSONL file."""
-        if not self.path or not self.path.exists():
-            self._loaded = True
-            return
-
+        # Always clear state first to avoid stale data on reload
         self.entries = []
         self._archived = []
         self._tool_use_index = {}
@@ -86,6 +83,10 @@ class Transcript:
         self._uuid_index = {}
         self._request_id_index = {}
         self._snapshot_index = {}
+
+        if not self.path or not self.path.exists():
+            self._loaded = True
+            return
 
         # Find last compact boundary to split archived vs current
         raw_entries: list[dict[str, Any]] = []
@@ -415,9 +416,10 @@ class Transcript:
         content = "\n".join(lines) + "\n" if lines else ""
 
         # Atomic write via temp file
+        # Use replace() instead of rename() for cross-platform compatibility (Windows)
         tmp_path = self.path.with_suffix(".jsonl.tmp")
         tmp_path.write_text(content)
-        tmp_path.rename(self.path)
+        tmp_path.replace(self.path)
 
     @contextmanager
     def batch(self) -> Generator[None, None, None]:
