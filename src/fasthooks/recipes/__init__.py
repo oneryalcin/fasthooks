@@ -147,6 +147,19 @@ def include_recipes(
     open per file**: a broken or throwing recipe is skipped with a warning and
     never takes down the other recipes or the server.
 
+    **Load order is alphabetical by filename.** Dispatch runs handlers in
+    registration order and short-circuits on the first *blocking* response, so
+    when order is load-bearing this default may not match your intent. The case
+    that bites: a side-effecting handler and a blocking gate on the same event —
+    ``commit_on_stop`` (alphabetically first → commits on *every* stop) vs
+    ``evaluator_gate`` (blocks an unfinished stop). Loaded this way you get
+    commit-then-block (WIP commits of failing states); to commit *only on a clean
+    stop*, don't scaffold ``commit-on-stop`` as a recipe file — include it
+    explicitly **after** the gates with ``app.include(commit_on_stop())`` (see
+    ``examples/long_running_harness.py``). Co-registration on one event is
+    ordinary composition, not a conflict to detect — only this order is
+    load-bearing.
+
     Returns the stems of the recipe files successfully included.
     """
     directory = Path(recipes_dir)

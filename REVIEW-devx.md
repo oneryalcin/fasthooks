@@ -357,7 +357,20 @@ Implement the recipe contract with **one** recipe chosen for being the cleanest 
 Defer until the slice above is consumed and proven:
 
 - Invisible server lifecycle (auto-start, auto-reload) — minimal slice runs `fasthooks serve` manually; polish later.
-- **Conflict detection** — ship it the moment the *second* recipe touching the same event lands, not before.
+- **Conflict detection** — **evaluated 2026-06-02, decided WON'T BUILD (theater).** The
+  harness now lands a 2nd recipe on `Stop` (`evaluator_gate` + `commit_on_stop`), the
+  trigger the doc named — so we looked. The "conflict" splits three ways, none a detector's
+  job: (1) *N handlers on one event* is ordinary composition (the harness already has 3 on
+  `PreToolUse`) — a warning there fires on every real harness = noise; (2) *two blocking
+  handlers* is cosmetic (both conditions still enforce; you lose only the 2nd reason); (3)
+  *side-effect-before-block* is the one behavioral case, but it's `commit_on_stop`'s
+  *documented* commit-on-every-stop contract, not a bug. The old `StrategyRegistry` model
+  (hard-error on any shared hook) is **backwards** for recipes — it'd break the harness. The
+  *real* issue found was narrower and not a conflict: `include_recipes` (alphabetical →
+  commit-first) vs `examples/long_running_harness.py` (hand-ordered → commit-last) gave
+  *opposite commit semantics* for the same recipe set — a consistency gap between our own two
+  entry points. **Fixed by documenting the ordering contract** in `include_recipes`' docstring
+  (no code/detector). Revisit only if a future recipe creates a genuine enforcement gap.
 - Contribution tooling (`new-recipe`, gallery, docs site), external recipe **index**, and the trust/provenance model that an index forces.
 - Native `if:` matcher generation, `prompt`/`agent`/`mcp_tool` delivery types.
 
